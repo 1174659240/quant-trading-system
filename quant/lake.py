@@ -788,6 +788,8 @@ _HELP = """lake —— 本地数据湖
                                                            # 估值/ST 日频快照（peTTM/pbMRQ/isST），断点续跑
   python -m quant lake fund        [--tables profit,balance,cashflow] [--start 2013-03-31] [--limit N]
                                                            # 财务三表（东财 RPT_F10_FINANCE_*），按报告期落盘
+  python -m quant lake index       [--codes 000300,000905]  # 指数成分快照（只有当前版本，带幸存者偏差）
+  python -m quant lake delisted    [--limit N] [--events-only]  # 退市股日线（后复权）+ 退市事件表
   python -m quant lake calendar    # 拉交易日历（停牌补齐用）
   python -m quant lake actions     # 拉除权除息事件表（复权用）
   python -m quant lake crawl       [--limit N] [--pause 0.3] [--force] [--source tencent]
@@ -848,6 +850,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--limit", type=int, default=None)
         parser.add_argument("--pause", type=float, default=0.05)
         parser.add_argument("--force", action="store_true", help="已落盘的也重抓")
+    if action == "index":
+        parser.add_argument("--codes", default=None, help="逗号分隔指数代码，缺省用内置清单")
+        parser.add_argument("--no-merge", action="store_true", help="不与既有快照合并，整体覆盖")
+    if action == "delisted":
+        parser.add_argument("--limit", type=int, default=None)
+        parser.add_argument("--pause", type=float, default=0.05)
+        parser.add_argument("--events-only", action="store_true", help="只重建事件表，不抓日线")
+        parser.add_argument("--force", action="store_true")
     if action == "parquet":
         parser.add_argument("--kinds", default="processed", help="逗号分隔：processed,holdout")
         parser.add_argument("--overwrite", action="store_true")
@@ -968,6 +978,38 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ✗ {key} {msg}")
         print(f"  目录：{summary['dir']}")
         data = summary
+    elif action == "index":
+        from . import index_members
+
+        codes = None if not args.codes else [c.strip() for c in args.codes.split(",") if c.strip()]
+        summary = index_members.build(codes, merge=not args.no_merge)
+        print(f"\n指数成分：{summary['rows']} 行 → {summary['written']}")
+        for code, info in summary["indices"].items():
+            print(f"  {code} {info['name']}: {info['members']} 只")
+        if summary["failures"]:
+            for code, msg in summary["failures"].items():
+                print(f"  ✗ {code} {msg}")
+        data = summary
+        data["manifest"] = str(index_members.write_manifest(summary))
+    elif action == "delisted":
+        from . import delisted
+
+        data = {}
+        if not args.events_only:
+            data["crawl"] = delisted.build(limit=args.limit, pause=args.pause, resume=not args.force)
+            c = data["crawl"]
+            print(
+                f"\n退市股日线：写入 {c['written']}/{c['targets']} 只 / {c['rows']} 行，"
+                f"空表 {c['empty']}，失败 {c['failed']}（用时 {c['seconds']}s）"
+            )
+            for symbol, msg in list(c["failures"].items())[:10]:
+                print(f"  ✗ {symbol} {msg}")
+        data["events"] = delisted.build_events()
+        e = data["events"]
+        print(
+            f"退市事件表：{e['targets']} 只（有日线 {e['with_bars']} / 无 {e['without_bars']}），"
+            f"日线合计 {e['rows']} 行，退市日-最后交易日 中位 {e['gap_median']} 天 → {e['written']}"
+        )
     elif action == "parquet":
         from . import parquet_store
 
