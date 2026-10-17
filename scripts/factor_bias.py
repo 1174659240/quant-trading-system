@@ -98,8 +98,11 @@ def main(argv=None) -> int:
     panel_live = type(panel_all)({key: value[live_symbols] for key, value in panel_all.fields.items()})
 
     # 只在**两个面板都有行情的日期**上比较：退市股日线起于 2014、在市股票起于 2016，
-    # 若不裁剪，2014-2015 与 2025 之后的横截面里只剩退市股，IC 会被噪声吞掉（曾踩到）。
-    common = panel_live.dates.intersection(panel_all.dates)
+    # 若不裁剪，2014-2015 与 2025 之后的横截面里只剩退市股，IC 会被噪声吞掉。
+    # 注意：panel_live 是从 panel_all 派生的，它的 dates 就是并集，
+    # 必须用 live 原始 K 线的日期求交集（曾踩到，等于没裁）。
+    live_dates = pd.DatetimeIndex(sorted(set().union(*[frame.index for frame in live.values()])))
+    common = live_dates.intersection(panel_all.dates)
     panel_live = type(panel_all)({key: value.loc[common] for key, value in panel_live.fields.items()})
     panel_all = type(panel_all)({key: value.loc[common] for key, value in panel_all.fields.items()})
     print(
