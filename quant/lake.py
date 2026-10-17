@@ -782,6 +782,8 @@ _HELP = """lake —— 本地数据湖
 用法：
   python -m quant lake init        [--root D:/quant-data]
   python -m quant lake universe    [--root ...]            # 抓全市场代码表
+  python -m quant lake ref         [--what universe,industry] [--start-year 2014] [--as-of YYYY-MM-DD]
+                                                           # 参考数据：universe 区间表 / 行业 PIT 快照
   python -m quant lake calendar    # 拉交易日历（停牌补齐用）
   python -m quant lake actions     # 拉除权除息事件表（复权用）
   python -m quant lake crawl       [--limit N] [--pause 0.3] [--force] [--source tencent]
@@ -823,6 +825,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--limit", type=int, default=None)
     if action in ("actions", "calendar"):
         parser.add_argument("--force", action="store_true")
+    if action == "ref":
+        parser.add_argument("--what", default="universe,industry", help="逗号分隔：universe,industry")
+        parser.add_argument("--start-year", type=int, default=2014, help="行业快照起始年份")
+        parser.add_argument("--as-of", default=None, help="基准日 YYYY-MM-DD，缺省今天")
     if action == "parquet":
         parser.add_argument("--kinds", default="processed", help="逗号分隔：processed,holdout")
         parser.add_argument("--overwrite", action="store_true")
@@ -841,6 +847,29 @@ def main(argv: list[str] | None = None) -> int:
         path = lake.write_universe(frame)
         print(f"代码表：{len(frame)} 只 → {path}")
         data = {"symbols": int(len(frame)), "path": str(path)}
+    elif action == "ref":
+        from . import refdata
+
+        wanted = [w.strip() for w in args.what.split(",") if w.strip()]
+        data = {"as_of": args.as_of}
+        for what in wanted:
+            if what == "universe":
+                data["universe"] = refdata.build_universe(as_of=args.as_of)
+                u = data["universe"]
+                print(
+                    f"universe：{u['rows']} 行（在市 {u['live']} / 退市 {u['delisted']} / 在途退市 {u['pending_delist']}），"
+                    f"B 股 {u['b_share']}，继任 {u['with_successor']} → {u['written'].get('parquet') or u['written']['csv']}"
+                )
+                print(f"  板块分布：{u['board_counts']}")
+            elif what == "industry":
+                data["industry"] = refdata.build_industry(start_year=args.start_year, as_of=args.as_of)
+                i = data["industry"]
+                print(f"industry：{i['rows']} 行 / {i['dates']} 版，最新版非空行业 {i['live_covered']} 只 → {i['written'].get('parquet') or i['written']['csv']}")
+                print(f"  各版条数：{i['per_date']}")
+            else:
+                print(f"未知参考数据：{what}（可选 universe,industry）")
+                return 1
+        data["manifest"] = str(refdata.write_manifest(data))
     elif action == "crawl":
         symbols = None
         if args.symbols:
