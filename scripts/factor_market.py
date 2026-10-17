@@ -1,4 +1,4 @@
-﻿"""全市场因子研究 + 多因子回测（只用 processed 层，holdout 层保持加锁）。
+"""全市场因子研究 + 多因子回测（只用 processed 层，holdout 层保持加锁）。
 
     python -m quant factor-market --limit 300                # 冒烟
     python -m quant factor-market --factors all              # 全市场全因子
@@ -65,6 +65,45 @@ def load_layer(root: Path, kind: str, limit: int | None = None, format: str = "a
     if format == "parquet":
         raise SystemExit(f"{parquet_dir} 不存在，先跑 `python -m quant lake parquet --kinds {kind}`")
     return _load_layer_csv(root, kind, limit)
+
+
+def load_delisted_bars(root: Path = LAKE) -> dict[str, pd.DataFrame]:
+    """读退市股日线（baostock 后复权），把列名对齐到 processed 层的 FIELDS。"""
+    folder = Path(root) / "delisted" / "daily"
+    bars: dict[str, pd.DataFrame] = {}
+    if not folder.is_dir():
+        return bars
+    for path in sorted(folder.glob("??????.parquet")):
+        frame = pd.read_parquet(path)
+        if frame.empty:
+            continue
+        frame = frame.rename(columns={"preclose": "prev_close"})
+        frame["date"] = pd.to_datetime(frame["date"])
+        frame = frame.set_index("date").sort_index()
+        frame = frame[~frame.index.duplicated(keep="last")]
+        keep = [column for column in FIELDS if column in frame.columns]
+        if len(keep) < len(FIELDS):
+            continue
+        bars[path.stem] = frame[keep].astype(float)
+    return bars
+
+
+def load_delisting_events(root: Path = LAKE) -> dict[str, pd.Timestamp]:
+    """读退市事件表 → {symbol: 最后交易日}（裸代码与带后缀两种写法都放）。"""
+    path = Path(root) / "delisted" / "events.csv"
+    if not path.is_file():
+        return {}
+    frame = pd.read_csv(path, dtype={"symbol": str})
+    if "bars" in frame.columns:
+        frame = frame[frame["bars"] > 0]
+    mapping: dict[str, pd.Timestamp] = {}
+    for row in frame.itertuples():
+        code = str(row.symbol).zfill(6)
+        stamp = pd.Timestamp(row.last_bar)
+        mapping[code] = stamp
+        for suffix in (".SH", ".SZ", ".BJ"):
+            mapping[code + suffix] = stamp
+    return mapping
 
 
 def _load_layer_parquet(parquet_dir: Path, kind: str) -> tuple[dict, dict]:
@@ -390,7 +429,12 @@ def run_backtest(bars: dict, wanted: list[str], args, out_dir: Path) -> dict:
     close = close.loc[(close.index >= pd.Timestamp(args.start)) & (close.index <= pd.Timestamp(args.end))]
     base = close.apply(lambda series: series.dropna().iloc[0] if series.notna().any() else np.nan)
     benchmark = close.div(base.where(base > 0), axis=1).where(close > 0).mean(axis=1, skipna=True)
-    engine = Engine(config=config, benchmark_prices=benchmark)
+    engine = Engine(
+        config=config,
+        benchmark_prices=benchmark,
+        delisting=load_delisting_events() if getattr(args, "include_delisted", False) else None,
+        delisting_mode=getattr(args, "delisting_mode", "haircut30"),
+    )
     t0 = time.perf_counter()
     result = engine.run_strategy(bars, strategy)
     elapsed = time.perf_counter() - t0
@@ -444,6 +488,12 @@ def main(argv=None) -> int:
     parser.add_argument("--min-trade-value", type=float, default=5_000.0,
                         help="单笔调仓最小金额（元），低于它的零碎调整跳过，默认 5000")
     parser.add_argument("--skip-backtest", action="store_true")
+    parser.add_argument("--include-delisted", action="store_true",
+                        help="把 256 只退市股补进票池（消除幸存者偏差；data/delisted 需已落盘）")
+    parser.add_argument("--delisting-mode", default="haircut30", choices=["last", "haircut30", "total_loss"],
+                        help="退市结算假设，仅 --include-delisted 时生效")
+    parser.add_argument("--fundamental", action="store_true",
+                        help="注册基本面/估值因子（需要 valuation + fundamentals 落盘）")
     parser.add_argument("--out", default=str(ROOT / "results" / "factor-market"))
     args = parser.parse_args(argv)
 
@@ -455,6 +505,17 @@ def main(argv=None) -> int:
 
     print(f"== 读取 {args.kind} 层：{args.lake} ==", flush=True)
     frames, load_stats = load_layer(Path(args.lake), args.kind, args.limit or None, format=args.format)
+    if args.fundamental:
+        from quant.factors import fundamental
+
+        registered = fundamental.register()
+        print(f"== 基本面因子已注册：{len(registered)} 个（{', '.join(registered)}） ==", flush=True)
+    if args.include_delisted:
+        dead = load_delisted_bars(Path(args.lake))
+        added = [symbol for symbol in dead if symbol not in frames]
+        frames.update({symbol: dead[symbol] for symbol in added})
+        load_stats["delisted_added"] = len(added)
+        print(f"== 补进退市股 {len(added)} 只（票池 {len(frames)} 只） ==", flush=True)
     print(json.dumps(load_stats, ensure_ascii=False, indent=2), flush=True)
 
     print("== 构建面板 ==", flush=True)
