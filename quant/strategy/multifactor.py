@@ -1,4 +1,4 @@
-﻿"""多因子选股策略（日线低频）。
+"""多因子选股策略（日线低频）。
 
 流程与券商/公募的主流做法一致：
 
@@ -128,6 +128,7 @@ class MultiFactorStrategy(Strategy):
         min_amount: float = 0.0,
         min_history: int = 120,
         min_universe: int = 10,
+        exclude: pd.DataFrame | None = None,
     ) -> None:
         specs = _parse_factors(factors)
         if not specs:
@@ -165,6 +166,8 @@ class MultiFactorStrategy(Strategy):
         self.min_amount = float(min_amount)
         self.min_history = int(min_history)
         self.min_universe = int(min_universe)
+        # 额外剔除矩阵（True=当日不可选，例如 ST）。按日期/代码 reindex，缺格视为不剔除。
+        self.exclude = exclude
         self.last_diagnostics: dict[str, Any] = {}
 
     # -- 主流程 -------------------------------------------------------------
@@ -275,7 +278,7 @@ class MultiFactorStrategy(Strategy):
     # -- 股票池 -------------------------------------------------------------
 
     def _eligible(self, panel: Panel) -> pd.DataFrame:
-        """当日可交易的股票池掩码（停牌、价格/成交额不达标、上市不足一并剔除）。"""
+        """当日可交易的股票池掩码（停牌、价格/成交额不达标、上市不足、ST 一并剔除）。"""
         mask = panel.tradable.copy()
         if self.min_price > 0:
             mask &= panel.close >= self.min_price
@@ -284,6 +287,9 @@ class MultiFactorStrategy(Strategy):
         if self.min_history > 1:
             history = panel.close.notna().cumsum()
             mask &= history >= self.min_history
+        if self.exclude is not None and not self.exclude.empty:
+            blocked = self.exclude.reindex(index=panel.dates, columns=panel.symbols).fillna(False).astype(bool)
+            mask &= ~blocked
         return mask
 
     # -- 因子权重（只用历史信息） -------------------------------------------

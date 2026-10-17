@@ -23,6 +23,7 @@ from quant.data import DataStore, SyntheticSource, make_gbm_frame
 from quant.report import write_report
 from quant.risk import exposure_cap, max_weight, vol_target
 from quant.strategy import BuyAndHold, MaCross, MomentumRank
+from quant.strategy.multifactor import MultiFactorStrategy
 
 
 def bars_fixture(periods: int = 300, symbols=("600519.SH", "000001.SZ")):
@@ -325,6 +326,47 @@ def test_delisting_settlement_modes():
     else:  # pragma: no cover
         raise AssertionError("未知退市结算方式应报 ValueError")
     print("  ✓ 退市结算：last > haircut30 > total_loss，折价额等于持仓市值×折扣")
+
+
+def test_exclude_mask_blocks_selection():
+    """额外剔除矩阵（ST）：被标记的票不能进入选股结果。"""
+    bars = bars_fixture(80, ("A.SH", "B.SH", "C.SH", "D2.SH", "E.SH", "F.SH"))
+    symbols = ["A.SH", "B.SH", "C.SH", "D2.SH", "E.SH", "F.SH"]
+    strategy = MultiFactorStrategy(
+        factors="momentum",
+        weighting="equal",
+        top_k=1,
+        rebalance="D",
+        min_history=20,
+        min_universe=1,
+    )
+    plain = strategy.generate(bars)
+    last = plain.index[-1]
+    picked = [name for name in symbols if plain.loc[last, name] > 0]
+    assert picked, "未剔除时应该有持仓"
+
+    exclude = pd.DataFrame(False, index=plain.index, columns=symbols)
+    exclude.loc[exclude.index >= exclude.index[20], picked[0]] = True
+    strategy_blocked = MultiFactorStrategy(
+        factors="momentum",
+        weighting="equal",
+        top_k=1,
+        rebalance="D",
+        min_history=20,
+        min_universe=1,
+        exclude=exclude,
+    )
+    blocked = strategy_blocked.generate(bars)
+    assert blocked.loc[last, picked[0]] == 0, "被剔除的票不应再持仓"
+    assert blocked.drop(columns=[picked[0]]).loc[last].sum() > 0, "资金应转向其他票"
+
+    # 空矩阵等于不剔除
+    empty = MultiFactorStrategy(
+        factors="momentum", weighting="equal", top_k=1, rebalance="D", min_history=20, min_universe=1,
+        exclude=pd.DataFrame(False, index=plain.index[:0], columns=[]),
+    )
+    assert empty.generate(bars).loc[last, picked[0]] > 0
+    print("  ✓ ST 剔除矩阵：被标记的票退出持仓，未被标记的票不受影响")
 
 
 def test_paper_trader_flow():

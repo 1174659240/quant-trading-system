@@ -204,6 +204,28 @@ def build(
     return summary
 
 
+def st_matrix(symbols: Sequence[str] | None = None) -> pd.DataFrame:
+    """``isST`` 布尔矩阵（index=交易日，columns=6 位代码，True=当日 ST）。
+
+    只读一列，不加载价量，所以比 :func:`load` 快；缺失日保持 NaN（转 bool 为 False）。
+    """
+    wanted = None if symbols is None else {str(s).zfill(6) for s in symbols}
+    series: dict[str, pd.Series] = {}
+    for path in sorted(VALUATION_DIR.glob("??????.parquet")):
+        if wanted is not None and path.stem not in wanted:
+            continue
+        one = pd.read_parquet(path, columns=["date", "isST"])
+        if len(one) == 0:
+            continue
+        series[path.stem] = pd.Series(
+            one["isST"].to_numpy(), index=pd.to_datetime(one["date"]), dtype="float64"
+        )
+    if not series:
+        return pd.DataFrame(dtype=bool)
+    wide = pd.DataFrame(series).sort_index().ffill()
+    return wide.fillna(0.0).astype(int).astype(bool)
+
+
 def load(symbols: Sequence[str] | None = None) -> pd.DataFrame:
     """读取估值面板（按 symbol 过滤）；只读已落盘文件。"""
     wanted = None if symbols is None else {str(s).zfill(6) for s in symbols}

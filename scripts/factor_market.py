@@ -249,7 +249,8 @@ def summarize_factor(name: str, result: dict, horizon: int) -> dict:
     return row
 
 
-def run_factor_study(panel, wanted: list[str], *, horizon: int, quantiles: int, min_count: int):
+def run_factor_study(panel, wanted: list[str], *, horizon: int, quantiles: int, min_count: int,
+                     block: pd.DataFrame | None = None):
     rows: list[dict] = []
     frames: dict[str, pd.DataFrame] = {}
     timings: dict[str, float] = {}
@@ -257,6 +258,8 @@ def run_factor_study(panel, wanted: list[str], *, horizon: int, quantiles: int, 
         t0 = time.perf_counter()
         frame = compute(name, panel)
         frame = frame.where(panel.tradable)  # 停牌/无量：不参与横截面
+        if block is not None and not block.empty:
+            frame = frame.where(~block.reindex(index=frame.index, columns=frame.columns).fillna(False))
         timings[f"compute.{name}"] = round(time.perf_counter() - t0, 2)
         t1 = time.perf_counter()
         result = evaluate_factor(
@@ -416,6 +419,7 @@ def run_backtest(bars: dict, wanted: list[str], args, out_dir: Path) -> dict:
         min_amount=args.min_amount,
         min_history=120,
         min_universe=100,
+        exclude=getattr(args, "st_mask", None),
     )
     config = BacktestConfig(
         start=args.start,
@@ -494,6 +498,8 @@ def main(argv=None) -> int:
                         help="退市结算假设，仅 --include-delisted 时生效")
     parser.add_argument("--fundamental", action="store_true",
                         help="注册基本面/估值因子（需要 valuation + fundamentals 落盘）")
+    parser.add_argument("--exclude-st", action="store_true",
+                        help="按估值层的逐日 isST 剔除 ST 股（选股与 IC 都剔除）")
     parser.add_argument("--out", default=str(ROOT / "results" / "factor-market"))
     args = parser.parse_args(argv)
 
@@ -516,6 +522,19 @@ def main(argv=None) -> int:
         frames.update({symbol: dead[symbol] for symbol in added})
         load_stats["delisted_added"] = len(added)
         print(f"== 补进退市股 {len(added)} 只（票池 {len(frames)} 只） ==", flush=True)
+    # bars 也要裁到 [start, end]：退市股带来 2014–2015 与 2025–2026 的日期，
+    # 而 MultiFactorStrategy 会自己从 bars 建面板 → 不裁的话策略在只有退市股交易的
+    # 年份里也会下单（实测 2014-08 就开出第一笔，2014-2015 牛市把收益拉高了 60pp）。
+    lo, hi = pd.Timestamp(args.start), pd.Timestamp(args.end)
+    clipped = {}
+    for symbol, frame in frames.items():
+        window = frame.loc[(frame.index >= lo) & (frame.index <= hi)]
+        if len(window) >= 2:
+            clipped[symbol] = window
+    dropped = len(frames) - len(clipped)
+    if dropped:
+        print(f"== bars 裁到 {args.start} ~ {args.end}：{len(clipped)} 只保留，{dropped} 只区间内无数据 ==", flush=True)
+    frames = clipped
     print(json.dumps(load_stats, ensure_ascii=False, indent=2), flush=True)
 
     print("== 构建面板 ==", flush=True)
@@ -538,9 +557,29 @@ def main(argv=None) -> int:
     if unknown:
         raise SystemExit(f"未知因子：{unknown}；可选 {factor_names()}")
 
+    st_mask = None
+    if args.exclude_st:
+        from quant.valuation import st_matrix
+
+        t0 = time.perf_counter()
+        st_mask = st_matrix()
+        args.st_mask = st_mask
+        if st_mask.empty:
+            print("== --exclude-st：估值层没有 isST 数据，本次不剔除 ==", flush=True)
+        else:
+            st_mask = st_mask.reindex(index=panel.dates, columns=panel.symbols).fillna(False).astype(bool)
+            args.st_mask = st_mask
+            share = float(st_mask.to_numpy().mean())
+            print(
+                f"== 剔除 ST：{len(st_mask)} 天 × {st_mask.shape[1]} 只，ST 占比 {share * 100:.2f}%"
+                f"（{round(time.perf_counter() - t0, 1)}s） ==",
+                flush=True,
+            )
+
     print(f"== 因子研究（{len(wanted)} 个） ==", flush=True)
     rows, factor_frames, timings = run_factor_study(
-        panel, wanted, horizon=args.horizon, quantiles=args.quantiles, min_count=args.min_count
+        panel, wanted, horizon=args.horizon, quantiles=args.quantiles, min_count=args.min_count,
+        block=st_mask,
     )
 
     corr = None
