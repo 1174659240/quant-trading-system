@@ -31,6 +31,7 @@ REPORTS = {
     "profit": "RPT_F10_FINANCE_GINCOME",
     "balance": "RPT_F10_FINANCE_GBALANCE",
     "cashflow": "RPT_F10_FINANCE_GCASHFLOW",
+    "indicator": "RPT_F10_FINANCE_MAINFINADATA",
 }
 
 KEYS = ["SECUCODE", "SECURITY_CODE", "SECURITY_NAME_ABBR", "ORG_CODE", "REPORT_DATE", "REPORT_TYPE", "NOTICE_DATE", "CURRENCY"]
@@ -66,6 +67,15 @@ COLUMNS = {
         "FA_IR_DEPR", "IA_AMORTIZE", "LPE_AMORTIZE", "DEFER_INCOME_AMORTIZE",
         "ASSET_IMPAIRMENT", "FAIRVALUE_CHANGE_LOSS", "DEFER_TAX",
         "INVENTORY_REDUCE", "OPERATE_RECE_REDUCE", "OPERATE_PAYABLE_ADD", "NETPROFIT",
+    ],
+    # 主要财务指标：三表覆盖不到金融业（银行/保险/证券没有通用资产负债表的行），
+    # 但这张表对全部公司都齐全，且自带 ROE/毛利率/同比与股本（BPS×股本＝归母净资产）。
+    "indicator": KEYS + [
+        "ORG_TYPE", "EPSJB", "EPSKCJB", "BPS", "MGJYXJJE", "MGWFPLR", "MGZBGJ",
+        "TOTALOPERATEREVE", "MLR", "PARENTNETPROFIT", "KCFJCXSYJLR",
+        "TOTALOPERATEREVETZ", "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ",
+        "ROEJQ", "ROEKCJQ", "ROIC", "XSJLL", "XSMLL", "ZCFZL",
+        "TOTAL_SHARE", "A_FREE_SHARE", "B_FREE_SHARE",
     ],
 }
 
@@ -153,7 +163,7 @@ def periods(start: str = "2013-03-31", end: str | None = None) -> list[str]:
 
 def build(
     *,
-    tables: Sequence[str] = ("profit", "balance", "cashflow"),
+    tables: Sequence[str] = ("profit", "balance", "cashflow", "indicator"),
     start: str = "2013-03-31",
     end: str | None = None,
     pause: float = 0.05,
