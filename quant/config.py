@@ -105,6 +105,9 @@ class BacktestConfig:
     params: Mapping[str, Any] = field(default_factory=dict)
     """策略超参，原样透传给 ``Strategy(**params)``。"""
 
+    min_trade_value: float = 0.0
+    """单笔调仓的最小金额（元）；低于它的零碎调整会被跳过，避免每天为价格漂移付佣金。"""
+
     def with_params(self, **overrides: Any) -> "BacktestConfig":
         merged = dict(self.params)
         merged.update(overrides)

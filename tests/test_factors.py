@@ -135,6 +135,21 @@ def test_factor_catalog_and_compute_shapes():
         raise AssertionError("未知因子应当报错")
 
 
+def test_every_registered_factor_computes():
+    """每个登记因子都必须能算：pandas 大版本升级常先炸在某个因子内部（如 Rolling.cov）。"""
+    panel = _panel(periods=200)
+    failures = []
+    for name in names():
+        try:
+            frame = compute(name, panel)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{name}: {type(exc).__name__}: {exc}")
+            continue
+        assert frame.shape == (len(panel.dates), len(panel.symbols)), name
+        assert frame.notna().any().any(), f"{name} 全为 NaN"
+    assert not failures, "以下因子算不出来：\n" + "\n".join(failures)
+
+
 def test_factor_sign_flips_direction():
     panel = _panel(periods=60)
     register_factor(

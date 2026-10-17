@@ -64,6 +64,22 @@ def _frame_to_csv_rows(frame: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
     return out
 
 
+def _ensure_status_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """processed/holdout 的列恒定为 {prev_close, suspended, tradable}。
+
+    没有交易日历时 ``materialize_suspensions`` 不会加 ``suspended`` 列；
+    这里补齐为 0，保证 CSV 层与 Parquet 层 schema 一致、下游不用分支判断。
+    """
+    out = frame.copy()
+    if "suspended" not in out.columns:
+        out["suspended"] = 0
+    out["suspended"] = out["suspended"].fillna(0).clip(0, 1).round().astype("int8")
+    # 统一口径：prev_close 一律是「前一交易日收盘」，首行为 NaN（不用 raw 层首行 open 的占位值）
+    out["prev_close"] = out["close"].shift(1)
+    out["tradable"] = ((out["volume"] > 0) & (out["suspended"] == 0)).astype("int8")
+    return out
+
+
 @dataclass
 class Lake:
     """数据湖门面。所有路径都从这里派生，不散落在脚本里。"""
@@ -94,6 +110,15 @@ class Lake:
     @property
     def holdout(self) -> Path:
         return self.root / "holdout" / "daily"
+
+    @property
+    def processed_parquet(self) -> Path:
+        """精简层的列式副本（按 year=YYYY 分区）；只是副本，CSV 仍是权威数据。"""
+        return self.root / "processed" / "parquet"
+
+    @property
+    def holdout_parquet(self) -> Path:
+        return self.root / "holdout" / "parquet"
 
     @property
     def meta(self) -> Path:
@@ -503,9 +528,8 @@ class Lake:
             frame = apply_qfq(frame, events_by.get(symbol))
             if len(calendar):
                 frame = materialize_suspensions(frame, calendar)
-            # 与 processed 层同口径：prev_close / tradable（停牌行 tradable=0）
-            frame["prev_close"] = frame["close"].shift(1)
-            frame["tradable"] = ((frame["volume"] > 0) & (frame.get("suspended", 0) == 0)).astype(int)
+            # 与 processed 层同口径：prev_close / suspended / tradable（停牌行 tradable=0）
+            frame = _ensure_status_columns(frame)
             part = frame.loc[frame.index >= cut]
             if len(part) == 0:
                 skipped.append(symbol)
@@ -567,8 +591,7 @@ class Lake:
                 continue
             train = train[~train.index.duplicated(keep="last")]
             train = train[(train["close"] > 0) & (train["volume"] >= 0)]
-            train["prev_close"] = train["close"].shift(1)
-            train["tradable"] = ((train["volume"] > 0) & (train.get("suspended", 0) == 0)).astype(int)
+            train = _ensure_status_columns(train)
             train = train.drop(columns=[c for c in ("symbol",) if c in train.columns])
             train = train.reset_index()
             train["date"] = pd.to_datetime(train["date"]).dt.strftime("%Y-%m-%d")
@@ -615,22 +638,66 @@ class Lake:
         return summary
 
     # ------------------------------------------------------------------ 读取
-    def read(self, symbol: str, *, kind: str = "processed") -> pd.DataFrame:
-        """读某一层的数据。holdout 需要显式解锁。"""
+    def read(self, symbol: str, *, kind: str = "processed", format: str = "auto") -> pd.DataFrame:
+        """读某一层的数据。holdout 需要显式解锁；``format`` 可选 auto/csv/parquet。"""
         if kind == "holdout":
             if not self.allow_holdout:
                 raise PermissionError(
                     "holdout 是最终校核集，默认禁止读取；确实要做最终校核时用 allow_holdout=True / --allow-holdout。"
                 )
             path = self.holdout_path(symbol)
+            parquet_dir = self.holdout_parquet
         elif kind == "raw":
             path = self.raw_path(symbol)
+            parquet_dir = None
         else:
             path = self.processed_path(symbol)
+            parquet_dir = self.processed_parquet
+        if format not in ("auto", "csv", "parquet"):
+            raise ValueError(f"format 只能是 auto/csv/parquet，收到 {format!r}")
+        use_parquet = format == "parquet" or (
+            format == "auto" and parquet_dir is not None and parquet_dir.exists()
+        )
+        if use_parquet and parquet_dir is not None and parquet_dir.exists():
+            from . import parquet_store
+
+            frame = parquet_store.read_symbol(symbol, parquet_dir)
+            if len(frame):
+                if kind != "raw" and "symbol" not in frame.columns:
+                    frame.insert(0, "symbol", symbol)
+                return frame
+            if format == "parquet":
+                raise FileNotFoundError(f"{parquet_dir} 里没有 {symbol}")
         if not path.exists():
             raise FileNotFoundError(path)
         frame = pd.read_csv(path, encoding="utf-8-sig", parse_dates=["date"], dtype={"symbol": str}).set_index("date")
         return frame.sort_index()
+
+    def convert_parquet(
+        self, *, kinds: Sequence[str] = ("processed",), overwrite: bool = False, sample: int = 10
+    ) -> dict:
+        """把 processed/holdout 的 CSV 层转成 Parquet 副本；raw 层不动。"""
+        from . import parquet_store
+
+        out: dict[str, dict] = {}
+        for kind in kinds:
+            if kind == "processed":
+                src, dst = self.processed, self.processed_parquet
+            elif kind == "holdout":
+                if not self.allow_holdout:
+                    raise PermissionError("转换 holdout 会读取校核集，需要 allow_holdout=True / --allow-holdout")
+                src, dst = self.holdout, self.holdout_parquet
+            else:
+                raise ValueError(f"只支持 processed/holdout，收到 {kind!r}")
+            out[kind] = parquet_store.convert(src, dst, overwrite=overwrite)
+            out[kind]["compare"] = parquet_store.compare_csv(src, dst, sample=sample)
+        summary = {
+            "finished": _now_iso(),
+            "layers": out,
+            "ok": all(layer["compare"]["ok"] for layer in out.values()),
+        }
+        self.save_manifest({**self.load_manifest(), "last_parquet": {k: v for k, v in summary.items() if k != "layers"}})
+        return summary
 
     def load_frames(
         self,
@@ -639,6 +706,7 @@ class Lake:
         kind: str = "processed",
         start: str | None = None,
         end: str | None = None,
+        format: str = "auto",
     ) -> dict[str, pd.DataFrame]:
         """批量读成「策略/回测能直接用的 dict[代码] -> DataFrame（date 索引）」。
 
@@ -652,7 +720,7 @@ class Lake:
         missing: list[str] = []
         for code in codes:
             try:
-                frame = self.read(code, kind=kind)
+                frame = self.read(code, kind=kind, format=format)
             except FileNotFoundError:
                 missing.append(code)
                 continue
@@ -695,6 +763,15 @@ class Lake:
                 part = pd.read_csv(hold, encoding="utf-8-sig", parse_dates=["date"], dtype={"symbol": str})
                 if len(part) and pd.to_datetime(part["date"]).min() < cut:
                     issues.append({"symbol": path.stem, "kind": "holdout", "issue": "校核集混入训练区间"})
+        if self.processed_parquet.exists():
+            from . import parquet_store
+
+            try:
+                cmp = parquet_store.compare_csv(self.processed, self.processed_parquet, sample=5)
+                for msg in cmp["mismatch"][:20]:
+                    issues.append({"symbol": "-", "kind": "parquet", "issue": msg})
+            except Exception as exc:
+                issues.append({"symbol": "-", "kind": "parquet", "issue": f"Parquet 层对拍失败: {exc}"})
         return {"checked": checked, "issues": issues, "issue_count": len(issues)}
 
 
@@ -710,6 +787,7 @@ _HELP = """lake —— 本地数据湖
   python -m quant lake crawl       [--limit N] [--pause 0.3] [--force] [--source tencent]
   python -m quant lake split       # 2025 起切到 holdout 并加锁
   python -m quant lake process     # 由 raw 的训练区间生成 processed
+  python -m quant lake parquet     [--kinds processed,holdout] [--overwrite]
   python -m quant lake status      [--json]
   python -m quant lake verify      [--limit N]
 说明：holdout 默认禁止读取，确需最终校核时加 --allow-holdout。
@@ -745,6 +823,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--limit", type=int, default=None)
     if action in ("actions", "calendar"):
         parser.add_argument("--force", action="store_true")
+    if action == "parquet":
+        parser.add_argument("--kinds", default="processed", help="逗号分隔：processed,holdout")
+        parser.add_argument("--overwrite", action="store_true")
+        parser.add_argument("--sample", type=int, default=10, help="对拍抽样的代码数")
     args = parser.parse_args(argv[1:])
     lake = _build_lake(args)
 
@@ -793,6 +875,25 @@ def main(argv: list[str] | None = None) -> int:
     elif action == "process":
         data = lake.build_processed()
         print(f"精简层：{data['files']} 只 / {data['rows']} 行 → {lake.processed}（跳过 {data['skipped']}）")
+    elif action == "parquet":
+        from . import parquet_store
+
+        if not parquet_store.available():
+            print("缺少 pyarrow：先执行 `python -m pip install pyarrow`（CSV 层不受影响）")
+            return 2
+        kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
+        data = lake.convert_parquet(kinds=kinds, overwrite=args.overwrite, sample=args.sample)
+        for kind, info in data["layers"].items():
+            cmp = info["compare"]
+            print(
+                f"{kind:10s} {info['rows']:>9d} 行 / {info['symbols']:>5d} 只 / {info['mb']:>7.1f} MB "
+                f"/ {info['files']} 个分区 → {info['out']}"
+            )
+            if cmp["ok"]:
+                print(f"           对拍通过：行数/代码数/日期范围/抽样 {cmp['checked_symbols']} 只逐值一致")
+            else:
+                for msg in cmp["mismatch"][:10]:
+                    print(f"           ! {msg}")
     elif action == "status":
         data = lake.manifest()
         progress = lake.crawl_progress()
@@ -805,6 +906,11 @@ def main(argv: list[str] | None = None) -> int:
                     f"{name:10s} {info.get('files', 0):5d} 只  {info.get('mb', 0):8.1f} MB  "
                     f"{info.get('first') or '-':10s} → {info.get('last') or '-':10s}"
                 )
+            for name, folder in (("pq-process", lake.processed_parquet), ("pq-holdout", lake.holdout_parquet)):
+                if folder.exists():
+                    parts = list(folder.rglob("*.parquet"))
+                    mb = sum(p.stat().st_size for p in parts) / 1024 / 1024
+                    print(f"{name:10s} {len(parts):5d} 个分区  {mb:8.1f} MB  （列式副本，CSV 仍是权威）")
             last = data.get("last_crawl") or {}
             if progress and progress.get("done"):
                 print(

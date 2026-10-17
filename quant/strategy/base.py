@@ -24,6 +24,26 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# pandas 2.2 起 "M/Q/A/Y" 等别名被弃用、3.x 直接报错；老配置里到处都是 "M"，
+# 不翻译的话 resample 会抛异常，而我们的兜底是「全部允许」→ 悄悄退化成每日调仓。
+_FREQ_ALIASES = {
+    "M": "ME",
+    "BM": "BME",
+    "Q": "QE",
+    "BQ": "BQE",
+    "A": "YE",
+    "Y": "YE",
+    "BA": "BYE",
+    "BY": "BYE",
+}
+
+
+def normalize_freq(freq: str | None) -> str | None:
+    """把旧式 pandas 频率别名翻译成新别名（只做精确匹配，其余原样返回）。"""
+    if not freq:
+        return freq
+    return _FREQ_ALIASES.get(freq.strip().upper(), freq)
+
 
 class Strategy(ABC):
     name = "strategy"
@@ -44,10 +64,11 @@ class Strategy(ABC):
         mask = pd.Series(True, index=index)
         if not freq:
             return mask
+        freq = normalize_freq(freq)
         try:
             marks = pd.Series(index, index=index).resample(freq).last().dropna()
-        except Exception:
-            return mask
+        except Exception as exc:  # 别再静默退化成每日调仓
+            raise ValueError(f"无法识别的调仓频率 {freq!r}：{exc}") from exc
         allowed = set(marks.values)
         return pd.Series([d in allowed for d in index], index=index)
 

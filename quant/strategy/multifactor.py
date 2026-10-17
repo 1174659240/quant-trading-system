@@ -1,4 +1,4 @@
-"""多因子选股策略（日线低频）。
+﻿"""多因子选股策略（日线低频）。
 
 流程与券商/公募的主流做法一致：
 
@@ -21,19 +21,50 @@
 
 from __future__ import annotations
 
+import warnings
+
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from quant.factors.composite import equal_weights
-from quant.factors.evaluate import ic_summary, rank_ic
 from quant.factors.library import compute
 from quant.factors.panel import Panel, build_panel
 from quant.factors.preprocess import preprocess
 from quant.strategy.base import Strategy
 
 __all__ = ["MultiFactorStrategy"]
+
+
+def _row_spearman(left: pd.DataFrame, right: pd.DataFrame, min_count: int = 5) -> pd.Series:
+    """逐日横截面秩相关（numpy 向量化）。
+
+    ``left``/``right`` 必须**已经按日求过秩**（``rank(axis=1)``）。等价于
+    逐日用 ``rank_ic``，但把"排秩"从「每个因子 × 每次刷新」降到「每因子一次」，
+    并且归约走 numpy（DataFrame 的 ``sum(axis=1)`` 在大宽表上会反复转置），
+    多因子回测里这是数量级的差别（5000 只 × 250 日窗口）。
+    """
+    l = left.to_numpy(dtype=np.float64, na_value=np.nan)
+    r = right.to_numpy(dtype=np.float64, na_value=np.nan)
+    mask = np.isfinite(l) & np.isfinite(r)
+    n = mask.sum(axis=1)
+    l = np.where(mask, l, np.nan)
+    r = np.where(mask, r, np.nan)
+    # 全空行（当日无有效截面）nanmean 会警告；结果本就是 NaN，静音即可
+    all_nan = n == 0
+    with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        lc = l - np.nanmean(l, axis=1, keepdims=True)
+        rc = r - np.nanmean(r, axis=1, keepdims=True)
+    lc[all_nan] = 0.0
+    rc[all_nan] = 0.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cov = np.nansum(lc * rc, axis=1)
+        den = np.sqrt(np.nansum(lc * lc, axis=1) * np.nansum(rc * rc, axis=1))
+        out = cov / np.where(den == 0, np.nan, den)
+    out[n < max(min_count, 2)] = np.nan
+    return pd.Series(out, index=left.index)
 
 
 def _parse_factors(factors: Any) -> dict[str, dict[str, Any]]:
@@ -157,10 +188,19 @@ class MultiFactorStrategy(Strategy):
         else:
             current_weights = equal_weights(raw.keys())
         forward = panel.forward_returns(1)
+        # IC 加权要把因子逐日排秩做秩相关；排秩与刷新日无关，先整体排一次，
+        # 否则每个因子 × 每次刷新都要重排 250×5000 的窗口（实测慢一个量级）。
+        ranked: dict[str, pd.DataFrame] | None = None
+        forward_rank: pd.DataFrame | None = None
+        if self.weighting in ("ic", "ir"):
+            ranked = {name: frame.rank(axis=1).astype("float32") for name, frame in raw.items()}
+            forward_rank = forward.rank(axis=1).astype("float32")
 
         for index, day in enumerate(rebalance_dates):
             if self.weighting in ("ic", "ir") and (index % self.weight_refresh == 0 or not weight_log):
-                current_weights = self._estimate_weights(raw, forward, day)
+                current_weights = self._estimate_weights(
+                    raw, forward, day, ranked=ranked, forward_rank=forward_rank
+                )
                 weight_log[str(day.date())] = current_weights
             row = None
             for name, frame in raw.items():
@@ -253,6 +293,9 @@ class MultiFactorStrategy(Strategy):
         raw: Mapping[str, pd.DataFrame],
         forward: pd.DataFrame,
         day: pd.Timestamp,
+        *,
+        ranked: Mapping[str, pd.DataFrame] | None = None,
+        forward_rank: pd.DataFrame | None = None,
     ) -> dict[str, float]:
         if self.weighting == "manual" and self.factor_weights:
             return dict(self.factor_weights)
@@ -262,12 +305,24 @@ class MultiFactorStrategy(Strategy):
         window = known[-self.ic_lookback :]
         if len(window) < self.ic_min_periods:
             return equal_weights(raw.keys())
-        fwd = forward.loc[window]
+        fwd_rank = forward_rank.loc[window] if forward_rank is not None else forward.loc[window].rank(axis=1)
         raw_scores: dict[str, float] = {}
         for name, frame in raw.items():
-            stats = ic_summary(rank_ic(frame.loc[window], fwd))
-            value = stats["ic_ir"] if self.weighting == "ir" else stats["ic_mean"]
-            raw_scores[name] = 0.0 if (value is None or np.isnan(value) or value <= 0) else float(value)
+            window_rank = ranked[name].loc[window] if ranked is not None else frame.loc[window].rank(axis=1)
+            series = _row_spearman(window_rank, fwd_rank)
+            if series.notna().sum() == 0:
+                raw_scores[name] = 0.0
+                continue
+            mean = float(series.mean())
+            std = float(series.std(ddof=1)) if series.notna().sum() > 1 else 0.0
+            if self.weighting == "ir" and np.isfinite(std) and std > 0:
+                value = mean / std
+            else:
+                value = mean
+            if not np.isfinite(value) or value <= 0:
+                raw_scores[name] = 0.0
+            else:
+                raw_scores[name] = float(value)
         total = sum(raw_scores.values())
         if total <= 0:
             return equal_weights(raw.keys())

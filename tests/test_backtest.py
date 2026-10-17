@@ -176,6 +176,50 @@ def test_rotation_strategy_runs():
           % (result.metrics["trade_count"], len(result.rejections), result.metrics["max_drawdown"] * 100))
 
 
+def test_legacy_monthly_alias_is_not_daily():
+    """pandas 3 不再认 "M"；翻译失败会静默退化成每日调仓（成交数暴涨），必须挡住。"""
+    from quant.strategy.base import normalize_freq
+
+    assert normalize_freq("M") == "ME"
+    assert normalize_freq("Q") == "QE"
+    assert normalize_freq("W-FRI") == "W-FRI"
+
+    bars = bars_fixture(300, ("600519.SH", "000001.SZ", "300750.SZ"))
+    cfg = BacktestConfig(initial_cash=800_000.0)
+    strategy = MomentumRank(lookback=20, top_k=2, rebalance="M")
+    index = None
+    result = run_backtest(bars, strategy, cfg)
+    index = result.equity.index
+    mask = strategy.rebalance_mask(index, "M")
+    monthly_marks = int(mask.sum())
+    # 300 个交易日 ≈ 12 个月；允许每月末落在非交易日时略少
+    assert 8 <= monthly_marks <= 16, f"M 应折算为月度调仓，实际调仓日 {monthly_marks} 个"
+    assert monthly_marks < len(index) / 5, "M 被当成每日调仓了"
+
+    try:
+        strategy.rebalance_mask(index, "不是频率")
+    except ValueError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("非法频率应当报错，而不是静默退化为每日调仓")
+    print(f"  ✓ 旧别名 M→ME：{monthly_marks} 个调仓日（{len(index)} 个交易日）")
+
+
+def test_min_trade_value_filters_drift_trades():
+    """最小调仓金额：低于阈值的小额漂移不再每天下碎单。"""
+    import dataclasses
+
+    bars = bars_fixture(300, ("600519.SH", "000001.SZ", "300750.SZ"))
+    base_cfg = BacktestConfig(initial_cash=800_000.0)
+    strategy = MomentumRank(lookback=20, top_k=2, rebalance="W-FRI")
+    loose = run_backtest(bars, strategy, base_cfg)
+    strict = run_backtest(bars, strategy, dataclasses.replace(base_cfg, min_trade_value=200_000.0))
+    assert strict.metrics["trade_count"] < loose.metrics["trade_count"]
+    assert strict.metrics["total_fees"] <= loose.metrics["total_fees"] + 1e-6
+    print(f"  ✓ 最小调仓金额生效：成交 {loose.metrics['trade_count']} → {strict.metrics['trade_count']} 笔，"
+          f"费用 {loose.metrics['total_fees']:.0f} → {strict.metrics['total_fees']:.0f} 元")
+
+
 def test_overlays_reduce_exposure():
     bars = bars_fixture(400, ("A.SH", "B.SZ", "C.SZ"))
     cfg = BacktestConfig(initial_cash=1_000_000.0)

@@ -1,7 +1,7 @@
 # 量化交易系统（A股 · Python 轻量引擎）
 
 一个**只依赖 pandas / numpy** 的 A 股日线研究引擎：数据层 → 指标 → 策略 → 回测 → 风控 → 报表，外加
-全市场数据湖、多因子框架、半自动实盘通道（带事前护栏）和环境自检。全部离线可复现，133 项自测。
+全市场数据湖、多因子框架、半自动实盘通道（带事前护栏）和环境自检。全部离线可复现，141 项自测。
 
 > 仅供研究与工程验证，不构成投资建议。回测能过不代表实盘能赚；接真钱前请读 `docs/实盘接入与合规.md`。
 
@@ -21,7 +21,7 @@
 │  ├─ doctor.py            环境自检
 │  └─ plugins.py  cli.py   策略插件注册表、命令行
 ├─ scripts/                fetch_data / run_backtest / optimize / paper_trade / factors / trade
-├─ tests/                  133 项离线自测（纯 assert，零额外依赖）
+├─ tests/                  141 项离线自测（纯 assert；Parquet 套件在无 pyarrow 时自动跳过）
 ├─ docs/                   实盘接入与合规、插件与安全审计
 ├─ config.toml             策略、成本、风控、通道、护栏配置
 └─ data/、results/         运行产物（已 gitignore）
@@ -31,7 +31,7 @@
 
 ```bash
 # 0) 需要一个有 pandas / numpy 的 Python 3.10+
-# 1) 自测：133 项，约 5 秒
+# 1) 自测：141 项，约 8 秒
 python tests/run_all.py
 
 # 2) 环境自检（运行时/时钟/数据源/下单通道/护栏），出报告到 results/doctor.md
@@ -48,6 +48,9 @@ python -m scripts.run_backtest
 
 # 4b) 因子研究报告：IC / 分层收益 / 因子相关性 → results/factor-report/
 python -m scripts.factors
+
+# 4c) 全市场因子研究 + 回测（读 processed 层，Parquet 优先；报告含读取性能实测）
+python -m quant factor-market --out results/market-2026-10-17 --format parquet
 
 # 5) 多策略对比
 python -m scripts.run_backtest --compare ma_cross,momentum_rank,multifactor
@@ -122,11 +125,17 @@ signal = composite_signals(panel, specs=[("mom_60", 1.0), ("low_vol_20", -0.5)])
 | 元数据 | `D:\quant-data\meta\universe.csv`、`manifest.json`、`crawl_progress.json`、`fetch_log.jsonl` | 代码表 / 状态 / 断点 / 逐只抓取日志 |
 | 精简层 | `D:\quant-data\processed\daily\<代码>.csv` | ≤2024-12-31、按日历补齐停牌、价格已按前复权因子缩放（另有 `adj_factor`/`prev_close`/`tradable` 列） |
 | 校核集 | `D:\quant-data\holdout\daily\<代码>.csv` + `.LOCKED` | 2025-01-01 起；**默认禁止读取**，只有 `allow_holdout=True` 才放行 |
+| 精简层（列式） | `D:\quant-data\processed\parquet\year=YYYY\data.parquet` | 与精简层同内容，zstd 压缩、按年分区；**CSV 仍是权威**，列式层可随时重建 |
+| 校核集（列式） | `D:\quant-data\holdout\parquet\year=YYYY\data.parquet` | 同上；读取仍要求 `--allow-holdout` |
 
 **落地结果（2026-10-17 全量首跑）**：raw 5,575 只 / 1,076.7 万行 / 2016-01-04 → 2026-10-16 / 748 MB；
 processed 5,278 只 / 855.8 万行 / ≤2024-12-31 / 745 MB（298 只是训练窗口不足 120 根的新股，属预期）；
 holdout 5,575 只 / 234.4 万行 / 2025-01-02 → 2026-10-16 / 200 MB；缺 920196 一只（新股只有 1 根）。
 详情见 `results/lake-summary.md`，重新生成：`python scripts/lake_report.py`；过程记录与坑见 `docs/数据湖落地记录.md`。
+
+**列式副本（2026-10-17 追加）**：`processed` 8,557,867 行 → 178.9 MB（9 个年份分区，转换 95 s，与 CSV 逐值对拍通过）；
+`holdout` 2,343,739 行 → 52.2 MB（2 个分区，41 s，同样对拍通过）。全市场读取实测：逐只 `read_csv` 29.3 s → Parquet 整层扫描 6.2 s。
+`raw` 层保持 CSV 原样；列式层是可重建副本，转换与对拍可用 `lake parquet` + `lake verify` 复现。
 
 ```bash
 python -m quant lake init                     # 建目录 + manifest
@@ -136,6 +145,8 @@ python -m quant lake actions --force          # 分红送转事件（约 4 万�
 python -m quant lake crawl --source auto      # 抓原始层（沪深走腾讯、北交所走新浪，自动续跑，可随时 Ctrl+C）
 python -m quant lake split --force            # 原始 → 校核集（2025-01-01 起）+ 写 .LOCKED
 python -m quant lake process --force          # 原始 → 精简层（≤2024-12-31、补停牌、套后复权因子）
+python -m quant lake parquet                    # 精简层 → Parquet 列式副本（需要 pyarrow，可重建）
+python -m quant lake parquet --kinds holdout --allow-holdout   # 校核集也转一份（读取仍受锁）
 python -m quant lake status                   # 各层行数 / 覆盖区间 / 完整性
 python -m quant lake verify                   # 非正价、缺口、重复行、因子 sanity 抽查
 ```
@@ -230,8 +241,8 @@ python -m scripts.run_backtest --source csv --csv-dir data/csv
 
 ## 自测覆盖
 
-133 项，全部离线、可复现（`python tests/run_all.py`，约 5 秒，10 个套件）：
+141 项，全部离线、可复现（`python tests/run_all.py`，约 8 秒，11 个套件）：
 数据契约/缓存、指标、撮合与费用/T+1/涨跌停、风控链、报表指标、插件注册、多因子 IC/分层、
-订单护栏与账本、CSV 通道、联网三源解析（录制报文，不联网）、数据湖（分层/加锁/续跑）、复权与停牌补齐。
+订单护栏与账本、CSV 通道、联网三源解析（录制报文，不联网）、数据湖（分层/加锁/续跑）、复权与停牌补齐、Parquet 转换与对拍。
 
-改代码请先跑 `python tests/run_all.py`；动数据层或复权逻辑，务必同步更新 `tests/test_actions.py` 与 `tests/test_lake.py`。
+改代码请先跑 `python tests/run_all.py`；动数据层或复权逻辑，务必同步更新 `tests/test_actions.py`、`tests/test_lake.py` 与 `tests/test_parquet.py`。

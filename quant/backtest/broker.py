@@ -121,7 +121,11 @@ class Broker:
         """目标权重 → 订单列表（不改变账户状态，可直接给模拟盘用）。"""
         equity = portfolio.equity
         orders: list[Order] = []
-        symbols = set(targets) | {s for s, p in portfolio.positions.items() if p.shares > 0}
+        # 只处理有目标权重或已持仓的标的：目标矩阵通常是全市场宽表，
+        # 逐日遍历全部 5000+ 只会让「查行情」从几万次放大到上千万次（回测慢一个量级）。
+        symbols = {s for s, w in targets.items() if float(w) != 0.0} | {
+            s for s, p in portfolio.positions.items() if p.shares > 0
+        }
 
         for symbol in sorted(symbols):
             weight = float(targets.get(symbol, 0.0))

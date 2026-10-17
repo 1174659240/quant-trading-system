@@ -31,6 +31,7 @@ SUBCOMMANDS = (
     "backtest",
     "fetch",
     "factor",
+    "factor-market",
     "optimize",
     "paper",
     "trade",
@@ -38,12 +39,14 @@ SUBCOMMANDS = (
     "lake",
     "plugins",
     "selftest",
+    "probe-delisted",
 )
 
 _HELP = {
     "backtest": "回测（单策略或 --compare 多策略对比）",
     "fetch": "取数 / 生成合成数据 / 数据体检",
     "factor": "因子研究报告：IC / 分层收益 / 因子相关性",
+    "factor-market": "全市场因子研究 + 多因子回测（只用 processed 层）",
     "optimize": "网格搜索 + 样本内/样本外验证",
     "paper": "纸上交易：plan / apply / status",
     "trade": "半自动实盘：plan / confirm / record / status / reconcile / limits",
@@ -51,6 +54,7 @@ _HELP = {
     "lake": "本地数据湖：全市场原始落地 / 精简层 / 最终校核集隔离",
     "plugins": "列出已注册的策略、数据源、风控 overlay 与插件文件",
     "selftest": "跑 tests/run_all.py 的全部离线测试",
+    "probe-delisted": "退市股/ST 改名 免费源探针（一次性）",
 }
 
 
@@ -121,12 +125,16 @@ def _dispatch(name: str, argv: list[str]) -> int:
         from scripts import fetch_data as module
     elif name == "factor":
         from scripts import factors as module
+    elif name == "factor-market":
+        from scripts import factor_market as module
     elif name == "optimize":
         from scripts import optimize as module
     elif name == "paper":
         from scripts import paper_trade as module
     elif name == "trade":
         from scripts import trade as module
+    elif name == "probe-delisted":
+        from scripts import probe_delisted as module
     else:  # pragma: no cover - argparse 已挡住
         raise SystemExit(f"未知子命令：{name}")
     return int(module.main(argv))

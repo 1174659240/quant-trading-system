@@ -92,9 +92,12 @@ class Engine:
             # 1) 以开盘价重估（定单规模与现金判断都用当日已知价格）
             portfolio.mark_all(open_map.get(date, {}), date)
             day_targets = executable.loc[date]
-            target_dict = {s: float(v) for s, v in day_targets.items()}
+            target_dict = {s: float(v) for s, v in day_targets.items() if v != 0.0}
 
-            orders = broker.plan_orders(date, target_dict, portfolio, bars, price_field="open")
+            orders = broker.plan_orders(
+                date, target_dict, portfolio, bars,
+                price_field="open", min_trade_value=self.config.min_trade_value,
+            )
             day_fills = broker.execute(date, orders, bars, portfolio)
 
             # 2) 收盘重估、结算、快照

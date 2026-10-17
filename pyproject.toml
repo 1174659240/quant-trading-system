@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 # 真实行情（离线合成数据不需要它）
 data = ["akshare>=1.12"]
+# 列式存储副本（数据湖 processed/holdout 的 Parquet 层；不装也能用 CSV）
+parquet = ["pyarrow>=15"]
 
 [project.scripts]
 aq = "quant.cli:entry"

@@ -208,10 +208,12 @@ def price_volume_corr(panel: Panel, *, window: int = 20) -> pd.DataFrame:
     """量价相关性：收益率与成交量变化的滚动相关（量价齐升更优）。"""
     returns = panel.returns
     volume_change = panel.volume.pct_change().replace([np.inf, -np.inf], np.nan)
-    left = returns.rolling(window, min_periods=max(8, window // 2))
-    right = volume_change.rolling(window, min_periods=max(8, window // 2))
-    cov = left.cov(right)
-    denom = left.std() * right.std()
+    min_periods = max(8, window // 2)
+    # pandas 3.x：Rolling.cov(other) 只接受 DataFrame/Series，不再接受另一个 Rolling
+    cov = returns.rolling(window, min_periods=min_periods).cov(volume_change)
+    denom = returns.rolling(window, min_periods=min_periods).std() * volume_change.rolling(
+        window, min_periods=min_periods
+    ).std()
     return cov / denom.replace(0, np.nan)
 
 
