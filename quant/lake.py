@@ -784,6 +784,10 @@ _HELP = """lake —— 本地数据湖
   python -m quant lake universe    [--root ...]            # 抓全市场代码表
   python -m quant lake ref         [--what universe,industry] [--start-year 2014] [--as-of YYYY-MM-DD]
                                                            # 参考数据：universe 区间表 / 行业 PIT 快照
+  python -m quant lake valuation   [--start 2014-01-01] [--end YYYY-MM-DD] [--limit N] [--pause 0.1]
+                                                           # 估值/ST 日频快照（peTTM/pbMRQ/isST），断点续跑
+  python -m quant lake fund        [--tables profit,balance,cashflow] [--start 2013-03-31] [--limit N]
+                                                           # 财务三表（东财 RPT_F10_FINANCE_*），按报告期落盘
   python -m quant lake calendar    # 拉交易日历（停牌补齐用）
   python -m quant lake actions     # 拉除权除息事件表（复权用）
   python -m quant lake crawl       [--limit N] [--pause 0.3] [--force] [--source tencent]
@@ -829,6 +833,21 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--what", default="universe,industry", help="逗号分隔：universe,industry")
         parser.add_argument("--start-year", type=int, default=2014, help="行业快照起始年份")
         parser.add_argument("--as-of", default=None, help="基准日 YYYY-MM-DD，缺省今天")
+    if action == "valuation":
+        parser.add_argument("--start", default="2014-01-01")
+        parser.add_argument("--end", default=None)
+        parser.add_argument("--limit", type=int, default=None)
+        parser.add_argument("--pause", type=float, default=0.10)
+        parser.add_argument("--symbols", default=None, help="逗号分隔，缺省用 universe 全表")
+        parser.add_argument("--force", action="store_true", help="已落盘的也重抓")
+        parser.add_argument("--shard", default=None, help="i/n：只处理第 i 片（0 起），用于多进程并行")
+    if action == "fund":
+        parser.add_argument("--tables", default="profit,balance,cashflow")
+        parser.add_argument("--start", default="2013-03-31")
+        parser.add_argument("--end", default=None)
+        parser.add_argument("--limit", type=int, default=None)
+        parser.add_argument("--pause", type=float, default=0.05)
+        parser.add_argument("--force", action="store_true", help="已落盘的也重抓")
     if action == "parquet":
         parser.add_argument("--kinds", default="processed", help="逗号分隔：processed,holdout")
         parser.add_argument("--overwrite", action="store_true")
@@ -904,6 +923,51 @@ def main(argv: list[str] | None = None) -> int:
     elif action == "process":
         data = lake.build_processed()
         print(f"精简层：{data['files']} 只 / {data['rows']} 行 → {lake.processed}（跳过 {data['skipped']}）")
+    elif action == "valuation":
+        from . import valuation
+
+        symbols = None
+        if args.symbols:
+            symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        summary = valuation.build(
+            symbols,
+            start=args.start,
+            end=args.end,
+            limit=args.limit,
+            pause=args.pause,
+            resume=not args.force,
+            shard=None if not args.shard else tuple(int(x) for x in args.shard.split("/")),
+        )
+        print(
+            f"\n估值快照：写入 {summary['written']} 只 / {summary['rows']} 行，"
+            f"空表 {summary['empty']}，失败 {summary['failed']}（用时 {summary['seconds']}s）"
+        )
+        if summary["empty_sample"]:
+            print(f"  空表样本：{summary['empty_sample'][:10]}")
+        for symbol, msg in list(summary["failures"].items())[:10]:
+            print(f"  ✗ {symbol} {msg}")
+        print(f"  目录：{summary['dir']}")
+        data = summary
+    elif action == "fund":
+        from . import fundamentals
+
+        tables = tuple(t.strip() for t in args.tables.split(",") if t.strip())
+        summary = fundamentals.build(
+            tables=tables,
+            start=args.start,
+            end=args.end,
+            limit=args.limit,
+            pause=args.pause,
+            resume=not args.force,
+        )
+        print(
+            f"\n财务三表：写入 {summary['written']} 期/{len(summary['tables'])} 表 / {summary['rows']} 行，"
+            f"失败 {summary['failed']}（用时 {summary['seconds']}s）"
+        )
+        for key, msg in list(summary["failures"].items())[:10]:
+            print(f"  ✗ {key} {msg}")
+        print(f"  目录：{summary['dir']}")
+        data = summary
     elif action == "parquet":
         from . import parquet_store
 
