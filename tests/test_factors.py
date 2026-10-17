@@ -1,4 +1,4 @@
-"""多因子框架自测：面板、因子库、预处理、IC 评估、合成与多因子策略。
+﻿"""多因子框架自测：面板、因子库、预处理、IC 评估、合成与多因子策略。
 
 这些测试全部离线（合成数据），跑得快，也不依赖任何数据源。
 重点检查三件容易出错的事：**方向**（值越大越看多）、**前视**（评估用未来收益、策略不用）、
@@ -133,6 +133,24 @@ def test_factor_catalog_and_compute_shapes():
         assert "没有因子" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("未知因子应当报错")
+
+
+def test_dedup_keeps_high_ic_ir_and_drops_redundant():
+    """去冗余：与高 IC_IR 因子近乎重复的因子应被剔除，独立的留下。"""
+    from scripts.factor_market import dedup_factors
+
+    dates = pd.date_range("2020-01-02", periods=80, freq="B")
+    syms = [f"{i:06d}" for i in range(160)]
+    rng = np.random.default_rng(7)
+    base = pd.DataFrame(rng.normal(size=(len(dates), len(syms))), index=dates, columns=syms)
+    dup = base + rng.normal(scale=0.01, size=base.shape)
+    other = pd.DataFrame(rng.normal(size=(len(dates), len(syms))), index=dates, columns=syms)
+    rows = [{"factor": "base", "ic_ir": 0.40}, {"factor": "dup", "ic_ir": 0.35}, {"factor": "other", "ic_ir": 0.20}]
+    kept, table = dedup_factors({"base": base, "dup": dup, "other": other}, rows, threshold=0.7)
+    assert kept[0] == "base"
+    assert "dup" not in kept
+    assert "other" in kept
+    assert set(table["action"]) == {"keep", "drop"}
 
 
 def test_every_registered_factor_computes():

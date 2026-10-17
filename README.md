@@ -1,7 +1,7 @@
 # 量化交易系统（A股 · Python 轻量引擎）
 
 一个**只依赖 pandas / numpy** 的 A 股日线研究引擎：数据层 → 指标 → 策略 → 回测 → 风控 → 报表，外加
-全市场数据湖、多因子框架、半自动实盘通道（带事前护栏）和环境自检。全部离线可复现，141 项自测。
+全市场数据湖、多因子框架、半自动实盘通道（带事前护栏）和环境自检。全部离线可复现，142 项自测。
 
 > 仅供研究与工程验证，不构成投资建议。回测能过不代表实盘能赚；接真钱前请读 `docs/实盘接入与合规.md`。
 
@@ -21,8 +21,8 @@
 │  ├─ doctor.py            环境自检
 │  └─ plugins.py  cli.py   策略插件注册表、命令行
 ├─ scripts/                fetch_data / run_backtest / optimize / paper_trade / factors / trade
-├─ tests/                  141 项离线自测（纯 assert；Parquet 套件在无 pyarrow 时自动跳过）
-├─ docs/                   实盘接入与合规、插件与安全审计
+├─ tests/                  142 项离线自测（纯 assert；Parquet 套件在无 pyarrow 时自动跳过）
+├─ docs/                   实盘接入与合规、插件与安全审计、数据湖落地记录、全市场因子研究记录、多因子最小完备集-数据设计、存储格式核对-Parquet
 ├─ config.toml             策略、成本、风控、通道、护栏配置
 └─ data/、results/         运行产物（已 gitignore）
 ```
@@ -31,7 +31,7 @@
 
 ```bash
 # 0) 需要一个有 pandas / numpy 的 Python 3.10+
-# 1) 自测：141 项，约 8 秒
+# 1) 自测：142 项，约 8 秒
 python tests/run_all.py
 
 # 2) 环境自检（运行时/时钟/数据源/下单通道/护栏），出报告到 results/doctor.md
@@ -49,8 +49,9 @@ python -m scripts.run_backtest
 # 4b) 因子研究报告：IC / 分层收益 / 因子相关性 → results/factor-report/
 python -m scripts.factors
 
-# 4c) 全市场因子研究 + 回测（读 processed 层，Parquet 优先；报告含读取性能实测）
-python -m quant factor-market --out results/market-2026-10-17 --format parquet
+# 4c) 全市场因子研究 + 回测 + Q1–Q5 分层 + 去冗余 + 频率网格（约 16 分钟）
+python -m quant factor-market --out results/market-2026-10-17 --format parquet \
+  --layer-horizon 5 --dedup-threshold 0.7 --grid M,2W,W --grid-topk 30
 
 # 5) 多策略对比
 python -m scripts.run_backtest --compare ma_cross,momentum_rank,multifactor
@@ -238,10 +239,12 @@ python -m scripts.run_backtest --source csv --csv-dir data/csv
 - 新浪兜底只有 1023 根，北交所历史天然短；
 - 未接实盘券商 API 的稳定版本，QMT 通道需要用户自备环境并自负风险；
 - 回测假设"涨停不买、跌停不卖"，但无法模拟排队与滑点分布，真实成交率会低于回测。
+- 全市场多因子在样本内**跑输同池等权**（−24.26% vs +24.91%，Alpha −5.27%/年）：IC 有信息但覆盖不了成本，
+  且正向因子收益峰值在 Q4 而非最高分位（见 `docs/全市场因子研究记录.md` 第八、十一节）；参数是样本内选的，不具外推意义。
 
 ## 自测覆盖
 
-141 项，全部离线、可复现（`python tests/run_all.py`，约 8 秒，11 个套件）：
+142 项，全部离线、可复现（`python tests/run_all.py`，约 8 秒，11 个套件）：
 数据契约/缓存、指标、撮合与费用/T+1/涨跌停、风控链、报表指标、插件注册、多因子 IC/分层、
 订单护栏与账本、CSV 通道、联网三源解析（录制报文，不联网）、数据湖（分层/加锁/续跑）、复权与停牌补齐、Parquet 转换与对拍。
 

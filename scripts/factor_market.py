@@ -1,4 +1,4 @@
-"""全市场因子研究 + 多因子回测（只用 processed 层，holdout 层保持加锁）。
+﻿"""全市场因子研究 + 多因子回测（只用 processed 层，holdout 层保持加锁）。
 
     python -m quant factor-market --limit 300                # 冒烟
     python -m quant factor-market --factors all              # 全市场全因子
@@ -39,6 +39,8 @@ from quant.factors import (  # noqa: E402
     evaluate_factor,
     factor_corr,
     names as factor_names,
+    quantile_returns,
+    quantile_summary,
 )
 from quant.report import to_markdown_table  # noqa: E402
 from quant.strategy.multifactor import MultiFactorStrategy  # noqa: E402
@@ -232,6 +234,102 @@ def run_factor_study(panel, wanted: list[str], *, horizon: int, quantiles: int, 
     return rows, frames, timings
 
 
+# --------------------------------------------------------------------------- 分层 / 去冗余 / 网格
+def layer_study(panel, frames: dict, rows: list[dict], *, horizon: int = 5, quantiles: int = 5,
+                min_count: int = 50, top_n: int = 6) -> dict[str, pd.DataFrame]:
+    """Q1–Q5 分层：按因子横截面分位建组，看未来 ``horizon`` 日的等权收益（Alphalens 口径）。
+
+    成熟项目对照：Alphalens 的 ``mean_return_by_quantile`` 用前瞻收益按分位分组取均值，
+    本函数同样口径；差别是我们不做行业中性（缺行业 PIT 数据），只用 ``tradable`` 过滤停牌。
+    """
+    forward = panel.forward_returns(int(horizon))
+    ranked = sorted(rows, key=lambda r: abs(float(r["ic_ir"])), reverse=True)[:top_n]
+    tables: dict[str, pd.DataFrame] = {}
+    for row in ranked:
+        name = row["factor"]
+        if name not in frames:
+            continue
+        qret = quantile_returns(frames[name], forward, quantiles=quantiles, min_count=min_count)
+        summary = quantile_summary(qret, periods_per_year=252.0 / max(int(horizon), 1))
+        summary["ic_ir"] = float(row["ic_ir"])
+        summary["ic_mean"] = float(row["ic_mean"])
+        tables[name] = summary
+    return tables
+
+
+def _avg_rank_corr(a: pd.DataFrame, b: pd.DataFrame, *, sample: int = 120, min_names: int = 100) -> float:
+    """两个因子逐日横截面秩相关的均值（采样日期，避免全量代价）。"""
+    dates = a.index.intersection(b.index)[:: max(len(a.index) // sample, 1)]
+    values: list[float] = []
+    for day in dates:
+        x, y = a.loc[day], b.loc[day]
+        mask = x.notna() & y.notna()
+        if int(mask.sum()) < min_names:
+            continue
+        corr = x[mask].rank().corr(y[mask].rank())
+        if corr == corr:
+            values.append(float(corr))
+    return float(np.mean(values)) if values else 0.0
+
+
+def dedup_factors(frames: dict, rows: list[dict], *, threshold: float = 0.7) -> tuple[list[str], pd.DataFrame]:
+    """按 |IC_IR| 从高到低贪心保留因子，剔除与已保留因子平均秩相关超阈值的冗余项。"""
+    order = sorted(rows, key=lambda r: abs(float(r["ic_ir"])), reverse=True)
+    kept: list[str] = []
+    kept_rows: dict[str, dict] = {}
+    records: list[dict] = []
+    for row in order:
+        name = row["factor"]
+        if name not in frames:
+            continue
+        if not kept:
+            kept.append(name)
+            kept_rows[name] = row
+            records.append({"factor": name, "action": "keep", "max_abs_corr": 0.0, "vs": "", "ic_ir": row["ic_ir"]})
+            continue
+        pairs = [(k, _avg_rank_corr(frames[name], frames[k])) for k in kept]
+        worst_name, worst = max(pairs, key=lambda item: abs(item[1]))
+        if abs(worst) >= threshold:
+            records.append({"factor": name, "action": "drop", "max_abs_corr": round(abs(worst), 3),
+                            "vs": worst_name, "ic_ir": row["ic_ir"]})
+        else:
+            kept.append(name)
+            kept_rows[name] = row
+            records.append({"factor": name, "action": "keep", "max_abs_corr": round(abs(worst), 3),
+                            "vs": worst_name, "ic_ir": row["ic_ir"]})
+    return kept, pd.DataFrame(records)
+
+
+def run_grid(bars: dict, wanted: list[str], args, out_dir: Path) -> pd.DataFrame:
+    """调仓频率 × 持仓数的网格：每个组合跑一次回测，输出收益/夏普/回撤/换手/费用。"""
+    freqs = [s.strip() for s in str(args.grid).split(",") if s.strip()]
+    topks = [int(s) for s in str(args.grid_topk).split(",") if s.strip()] or [args.top_k]
+    rows: list[dict] = []
+    for freq in freqs:
+        for top_k in topks:
+            print(f"== 网格：rebalance={freq} top_k={top_k} ==", flush=True)
+            local = argparse.Namespace(**vars(args))
+            local.rebalance = freq
+            local.top_k = top_k
+            out = run_backtest(bars, wanted, local, out_dir / f"grid-{freq}-{top_k}")
+            metrics = dict(out["metrics"])
+            row = {"rebalance": freq, "top_k": top_k, "seconds": out["seconds"],
+                   "rebalances": out["rebalances"], "avg_holdings": out["avg_holdings"],
+                   "total_return": metrics.get("累计收益"), "cagr": metrics.get("年化收益（CAGR）"),
+                   "sharpe": metrics.get("夏普"), "max_drawdown": metrics.get("最大回撤"),
+                   "turnover": metrics.get("日均换手"), "fees": metrics.get("费用合计"),
+                   "trades": metrics.get("成交笔数"), "alpha": metrics.get("Beta / Alpha"),
+                   "benchmark": metrics.get("基准累计收益")}
+            rows.append(row)
+            print(f"   收益 {row['total_return']} 夏普 {row['sharpe']} 回撤 {row['max_drawdown']}"
+                  f" 换手 {row['turnover']} 费用 {row['fees']}", flush=True)
+            gc.collect()
+    table = pd.DataFrame(rows)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    table.to_csv(out_dir / "grid.csv", index=False, encoding="utf-8-sig")
+    return table
+
+
 # --------------------------------------------------------------------------- 回测
 def metrics_rows(result) -> list[tuple[str, str]]:
     m = result.metrics
@@ -329,6 +427,12 @@ def main(argv=None) -> int:
     parser.add_argument("--factors", default="all", help="all 或逗号分隔")
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--quantiles", type=int, default=5)
+    parser.add_argument("--layer-horizon", type=int, default=5,
+                        help="Q1–Q5 分层表用的前瞻天数（默认 5 日，对应周频）")
+    parser.add_argument("--dedup-threshold", type=float, default=0.7,
+                        help="因子去冗余阈值：与已保留因子的平均秩相关绝对值超过它就剔除，默认 0.7")
+    parser.add_argument("--grid", default="", help="调仓频率网格，逗号分隔，如 M,2W,W")
+    parser.add_argument("--grid-topk", default="", help="持仓数网格，逗号分隔，如 20,30,50")
     parser.add_argument("--min-count", type=int, default=50)
     parser.add_argument("--start", default="2016-01-04")
     parser.add_argument("--end", default="2024-12-31")
@@ -382,14 +486,34 @@ def main(argv=None) -> int:
     if corr is not None:
         corr.to_csv(out_dir / "factor-corr.csv", encoding="utf-8-sig")
 
+    print("== Q1–Q5 分层（前瞻 %d 日） ==" % args.layer_horizon, flush=True)
+    t0 = time.perf_counter()
+    layers = layer_study(panel, factor_frames, rows, horizon=args.layer_horizon,
+                         quantiles=args.quantiles, min_count=args.min_count)
+    timings["layers"] = round(time.perf_counter() - t0, 2)
+    if layers:
+        merged = pd.concat({name: frame for name, frame in layers.items()}, names=["factor", "bucket"])
+        merged.to_csv(out_dir / "quantile.csv", encoding="utf-8-sig")
+
+    print("== 因子去冗余（阈值 %.2f） ==" % args.dedup_threshold, flush=True)
+    t0 = time.perf_counter()
+    kept, dedup = dedup_factors(factor_frames, rows, threshold=args.dedup_threshold)
+    timings["dedup"] = round(time.perf_counter() - t0, 2)
+    dedup.to_csv(out_dir / "factor-dedup.csv", index=False, encoding="utf-8-sig")
+    print(f"  保留 {len(kept)}/{len(rows)} 个：{', '.join(kept)}", flush=True)
+
     del factor_frames
     gc.collect()
 
     backtest: dict | None = None
+    grid: pd.DataFrame | None = None
     if not args.skip_backtest:
         print("== 多因子回测 ==", flush=True)
         backtest = run_backtest(frames, wanted, args, out_dir)
         print(f"  完成，{backtest['seconds']}s", flush=True)
+    if args.grid:
+        print("== 调仓频率/持仓数网格 ==", flush=True)
+        grid = run_grid(frames, wanted, args, out_dir)
 
     timings["read"] = load_stats["seconds_total"]
     timings["panel"] = panel_seconds
@@ -405,7 +529,7 @@ def main(argv=None) -> int:
                  f"停牌行在因子计算中剔除、回测中保留但不参与成交")
     lines.append(f"- 清洗：逐日 MAD 去极值 k=5，标准化；IC 用秩相关，min_count={args.min_count}")
     lines.append("- 基准：全池等权买入持有（首个有效收盘价归一后等权），用于 Beta / Alpha / 信息比率")
-    lines.append("- 调仓：月度（`M` 经 `normalize_freq` 折算为 pandas 3 的 `ME`）；"
+    lines.append(f"- 调仓：{args.rebalance}（旧别名经 `normalize_freq` 折算成 pandas 3 可认的频率，如 M→ME）；"
                  f"小额调仓阈值 {args.min_trade_value:,.0f} 元，低于它的漂移不再下碎单")
     lines.append("- 口径修正：早期版本把 pandas 3 不认的 `M` 静默回退成每日调仓（成交数与费用被放大），"
                  "本报告数字均为修正后重跑，与旧报告不可直接比较")
@@ -442,8 +566,43 @@ def main(argv=None) -> int:
         lines.append(to_markdown_table(corr, floatfmt="+.3f"))
         lines.append("")
 
+    if layers:
+        lines.append(f"## Q1–Q5 分层收益（前瞻 {args.layer_horizon} 日）")
+        lines.append("")
+        lines.append("> 口径同 Alphalens 的 `mean_return_by_quantile`：逐日按因子横截面分位建 5 组，"
+                     "取各组未来 N 日等权收益；这里不做行业中性（缺行业 PIT 数据），停牌已从横截面剔除。")
+        lines.append("")
+        for name, frame in layers.items():
+            show = frame.copy()
+            show["days"] = show["days"].astype(int)
+            for col in ("mean", "annual"):
+                show[col] = (show[col] * 100).round(2).astype(str) + "%"
+            show["positive_rate"] = (show["positive_rate"] * 100).round(1).astype(str) + "%"
+            show = show[["mean", "annual", "positive_rate", "days"]]
+            lines.append(f"### {name}（IC_IR {frame['ic_ir'].iloc[0]:+.3f}）")
+            lines.append("")
+            lines.append(to_markdown_table(show))
+            lines.append("")
+
+    if dedup is not None and len(dedup):
+        lines.append(f"## 因子去冗余（平均秩相关阈值 {args.dedup_threshold:.2f}）")
+        lines.append("")
+        lines.append("> 从 |IC_IR| 最高的因子开始贪心保留；与已保留因子平均秩相关超阈值的判为冗余。"
+                     "这一步只算统计冗余，不代表冗余因子没用（信息可能体现在别的维度）。")
+        lines.append("")
+        lines.append(to_markdown_table(dedup, floatfmt="+.3f"))
+        lines.append("")
+
+    if grid is not None and len(grid):
+        lines.append("## 调仓频率 × 持仓数网格")
+        lines.append("")
+        lines.append(to_markdown_table(grid))
+        lines.append("")
+        lines.append("> 网格是样本内结果，不能用于选参数上线；它只回答「成本与信号衰减的平衡点大致在哪」。")
+        lines.append("")
+
     if backtest is not None:
-        lines.append("## 多因子回测（月度调仓）")
+        lines.append(f"## 多因子回测（{args.rebalance} 调仓）")
         lines.append("")
         lines.append(f"- 策略：{backtest['strategy']}")
         lines.append(f"- 调仓次数 {backtest['rebalances']}，平均持仓 {backtest['avg_holdings']} 只，"
