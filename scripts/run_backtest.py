@@ -107,8 +107,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--vol-target", type=float, default=None, help="目标年化波动，例如 0.15")
     p.add_argument("--no-overlay", action="store_true", help="忽略配置里的风控 overlay")
     p.add_argument("--slippage-bps", type=float, default=None)
+    p.add_argument(
+        "--delisting-mode",
+        default="none",
+        choices=("none", "last", "haircut30", "total_loss"),
+        help="退市结算假设：none=不结算（旧行为）/ last=按最后价 / haircut30=折价30%% / total_loss=全损",
+    )
+    p.add_argument("--delisting-events", default="D:/quant-data/delisted/events.csv", help="退市事件表路径")
     p.add_argument("--quiet", action="store_true")
     return p.parse_args(argv)
+
+
+def load_delisting(mode: str, path: str) -> dict[str, pd.Timestamp] | None:
+    """读退市事件表 → {symbol: 最后交易日}；none 模式直接返回 None。
+
+    事件表的 symbol 是 6 位裸代码，而 bars 的 key 可能带 .SH/.SZ 后缀，
+    所以两种写法都放进字典，引擎按 bars 的 key 查表。
+    """
+    if mode == "none":
+        return None
+    events_path = Path(path)
+    if not events_path.is_file():
+        raise SystemExit(f"退市事件表不存在：{events_path}（先跑 python -m quant lake delisted --events-only）")
+    frame = pd.read_csv(events_path, dtype={"symbol": str})
+    if "bars" in frame.columns:
+        frame = frame[frame["bars"] > 0]
+    mapping: dict[str, pd.Timestamp] = {}
+    for row in frame.itertuples():
+        code = str(row.symbol).zfill(6)
+        stamp = pd.Timestamp(row.last_bar)
+        mapping[code] = stamp
+        for suffix in (".SH", ".SZ", ".BJ"):
+            mapping[code + suffix] = stamp
+    print(f"退市结算：{mode}，事件表 {len(frame)} 只（{events_path.name}）")
+    return mapping
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -185,12 +217,27 @@ def main(argv: list[str] | None = None) -> int:
         print("--compare 至少需要两个策略，自动改用：" + ", ".join(names))
 
     results: dict[str, object] = {}
+    delisting_map = load_delisting(args.delisting_mode, args.delisting_events)
     for name in names:
         strategy = plugins.build_strategy(name, **dict(cfg.params))
-        result = run_backtest(bars, strategy, cfg, overlays=overlays, benchmark_prices=benchmark_prices)
+        result = run_backtest(
+            bars,
+            strategy,
+            cfg,
+            overlays=overlays,
+            benchmark_prices=benchmark_prices,
+            delisting=delisting_map,
+            delisting_mode=args.delisting_mode if delisting_map else "last",
+        )
         results[strategy.describe()] = result
         if not args.quiet:
             print("\n" + result.summary())
+            if delisting_map and result.delistings is not None and len(result.delistings):
+                settled = result.delistings
+                print(
+                    f"退市结算 {len(settled)} 笔，合计已实现盈亏 "
+                    f"{settled['realized_pnl'].sum():,.0f} 元（{args.delisting_mode}）"
+                )
         out_name = args.name or name
         if len(names) > 1:
             out_name = f"{args.name or 'batch'}-{name}"

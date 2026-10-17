@@ -25,6 +25,9 @@ from .portfolio import Portfolio
 RiskOverlay = Callable[[pd.DataFrame, dict[str, pd.DataFrame], dict], pd.DataFrame]
 
 
+DELISTING_FACTORS = {"last": 1.0, "haircut30": 0.7, "total_loss": 0.0}
+
+
 @dataclass
 class BacktestResult:
     strategy: str
@@ -37,6 +40,7 @@ class BacktestResult:
     report: PerformanceReport
     benchmark: pd.Series | None = None
     config: BacktestConfig | None = None
+    delistings: pd.DataFrame | None = None
 
     # ---- 便捷 ----
     @property
@@ -57,6 +61,9 @@ class Engine:
     verbose: bool = False
     # 基准收盘价序列（可选）。给了就用它算基准，否则退回「全池等权指数」。
     benchmark_prices: pd.Series | None = None
+    # 退市结算：symbol → 最后一个可交易日；mode 见 DELISTING_FACTORS
+    delisting: Mapping[str, pd.Timestamp] | None = None
+    delisting_mode: str = "last"
 
     # -------------------------------------------------------------- 主流程
     def run(self, bars: dict[str, pd.DataFrame], weights: pd.DataFrame, strategy_name: str = "strategy") -> BacktestResult:
@@ -64,6 +71,9 @@ class Engine:
             raise ValueError("bars 为空，无法回测")
         if weights is None or weights.empty:
             raise ValueError("目标权重矩阵为空")
+        if self.delisting_mode not in DELISTING_FACTORS:
+            raise ValueError(f"未知退市结算方式 {self.delisting_mode!r}，可选 {sorted(DELISTING_FACTORS)}")
+        factor = DELISTING_FACTORS[self.delisting_mode]
 
         bars = {s: f.sort_index() for s, f in bars.items()}
         calendar = self._calendar(bars)
@@ -85,8 +95,10 @@ class Engine:
 
         trades: list[Fill] = []
         held_rows: list[dict] = []
+        delist_rows: list[dict] = []
         open_map = self._price_map(bars, "open", calendar)
         close_map = self._price_map(bars, "close", calendar)
+        last_bar = {symbol: frame.index[-1] for symbol, frame in bars.items() if len(frame)} if self.delisting else {}
 
         for date in calendar:
             # 1) 以开盘价重估（定单规模与现金判断都用当日已知价格）
@@ -107,6 +119,16 @@ class Engine:
             equity_now = portfolio.equity
             turnover = gross / max(equity_now, 1e-9)
             portfolio.settle()
+            # 3) 退市结算：过了最后一个交易日后强制了结，按假设折价变现
+            if self.delisting:
+                for symbol in list(portfolio.positions):
+                    event_day = self.delisting.get(symbol)
+                    if event_day is None or date < event_day:
+                        continue
+                    if date > last_bar.get(symbol, date):
+                        record = portfolio.liquidate(symbol, factor=factor, date=date)
+                        if record is not None:
+                            delist_rows.append(record)
             portfolio.snapshot(date, turnover=turnover, fees=fees)
             trades.extend(day_fills)
             held_rows.append(portfolio.weights())
@@ -137,6 +159,7 @@ class Engine:
             report=report,
             benchmark=benchmark,
             config=self.config,
+            delistings=pd.DataFrame(delist_rows),
         )
 
     def run_strategy(self, bars: dict[str, pd.DataFrame], strategy) -> BacktestResult:
@@ -189,13 +212,21 @@ def run_backtest(
     *,
     overlays: Iterable[RiskOverlay] | None = None,
     benchmark_prices: pd.Series | None = None,
+    delisting: Mapping[str, pd.Timestamp] | None = None,
+    delisting_mode: str = "last",
 ) -> BacktestResult:
-    """一行跑完：``run_backtest(bars, MaCross(10, 30))``。"""
+    """一行跑完：``run_backtest(bars, MaCross(10, 30))``。
+
+    ``delisting`` 给 ``{symbol: 最后交易日}`` 才会启用退市结算，``delisting_mode``
+    决定这批持仓按 ``last``（0%）/ ``haircut30``（−30%）/ ``total_loss``（−100%）处置。
+    """
     config = config or BacktestConfig()
     engine = Engine(
         config=config,
         overlays=list(overlays or []),
         verbose=True,
         benchmark_prices=benchmark_prices,
+        delisting=delisting,
+        delisting_mode=delisting_mode,
     )
     return engine.run_strategy(bars, strategy)

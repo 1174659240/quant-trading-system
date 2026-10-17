@@ -288,6 +288,45 @@ def test_benchmark_prices_used_for_alpha():
     print("  ✓ 基准序列按传入的收盘价计算（不再错用全池等权指数）")
 
 
+def test_delisting_settlement_modes():
+    """退市结算：持有到退市日的仓位必须按假设折价变现，三种方式净值严格递减。"""
+    bars = bars_fixture(60, ("A.SH", "D.SZ"))
+    last_bar = bars["D.SZ"].index[20]
+    # D.SZ 只交易 21 天就退市，之后没有行情；A.SH 一直交易
+    bars["D.SZ"] = bars["D.SZ"].iloc[:21]
+    cfg = BacktestConfig(initial_cash=1_000_000.0, universe=("A.SH", "D.SZ"))
+
+    results = {}
+    for mode in ("last", "haircut30", "total_loss"):
+        result = run_backtest(bars, BuyAndHold(), cfg, delisting={"D.SZ": last_bar}, delisting_mode=mode)
+        results[mode] = result
+        assert result.delistings is not None and len(result.delistings) == 1, f"{mode} 应结算 1 笔退市"
+        row = result.delistings.iloc[0]
+        assert row["symbol"] == "D.SZ"
+        assert row["date"] > last_bar, "退市结算必须发生在最后一个交易日之后"
+        assert row["factor"] == {"last": 1.0, "haircut30": 0.7, "total_loss": 0.0}[mode]
+
+    final = {mode: float(r.equity.iloc[-1]) for mode, r in results.items()}
+    assert final["last"] > final["haircut30"] > final["total_loss"], final
+    # 折价额按「结算当日净值」核对：之后组合会拿回笼现金再投资，终值差额会被放大
+    settle_date = results["haircut30"].delistings.iloc[0]["date"]
+    shares = float(results["haircut30"].delistings.iloc[0]["shares"])
+    price = float(results["haircut30"].delistings.iloc[0]["last_price"])
+    eq_last = float(results["last"].daily.loc[settle_date, "equity"])
+    eq_hair = float(results["haircut30"].daily.loc[settle_date, "equity"])
+    assert abs((eq_last - eq_hair) - 0.3 * shares * price) < 1e-6, (eq_last - eq_hair, 0.3 * shares * price)
+    plain = run_backtest(bars, BuyAndHold(), cfg)
+    assert plain.delistings is not None and len(plain.delistings) == 0
+
+    try:
+        run_backtest(bars, BuyAndHold(), cfg, delisting={"D.SZ": last_bar}, delisting_mode="whatever")
+    except ValueError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("未知退市结算方式应报 ValueError")
+    print("  ✓ 退市结算：last > haircut30 > total_loss，折价额等于持仓市值×折扣")
+
+
 def test_paper_trader_flow():
     from quant.execution import PaperTrader
 
@@ -337,6 +376,7 @@ def run() -> None:
         test_overlays_reduce_exposure,
         test_metrics_known_values,
         test_report_files_written,
+        test_delisting_settlement_modes,
         test_paper_trader_flow,
     ):
         fn()

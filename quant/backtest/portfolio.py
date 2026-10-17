@@ -111,6 +111,35 @@ class Portfolio:
         for pos in self.positions.values():
             pos.available = pos.shares
 
+    def liquidate(self, symbol: str, *, factor: float = 1.0, date: pd.Timestamp | None = None) -> dict | None:
+        """强制了结一个持仓（退市结算用）：按最后价 × factor 折价变现。
+
+        factor 的物理含义是「退市时这笔持仓实际能拿回多少」：
+        ``1.0`` 乐观（老三板按最后价卖）、``0.7`` 折价 30%、``0.0`` 全损。
+        返回结算记录（无持仓时返回 None），供回测输出退市事件表。
+        """
+        pos = self.positions.get(symbol)
+        if pos is None or pos.shares <= 0:
+            return None
+        price = float(pos.last_price)
+        shares = int(pos.shares)
+        proceeds = price * shares * float(factor)
+        realized = proceeds - float(pos.cost_basis) * shares
+        self.cash += proceeds
+        self.realized_pnl += realized
+        pos.shares = 0
+        pos.available = 0
+        pos.cost_basis = 0.0
+        return {
+            "symbol": symbol,
+            "date": date,
+            "shares": shares,
+            "last_price": price,
+            "factor": float(factor),
+            "proceeds": proceeds,
+            "realized_pnl": realized,
+        }
+
     # ---- 快照 ----
     def snapshot(self, date: pd.Timestamp, *, turnover: float = 0.0, fees: float = 0.0) -> dict:
         row = {

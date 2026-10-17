@@ -96,9 +96,15 @@ def main(argv=None) -> int:
     panel_all = build_panel(all_bars)
     live_symbols = [s for s in live if s in panel_all.symbols]
     panel_live = type(panel_all)({key: value[live_symbols] for key, value in panel_all.fields.items()})
+
+    # 只在**两个面板都有行情的日期**上比较：退市股日线起于 2014、在市股票起于 2016，
+    # 若不裁剪，2014-2015 与 2025 之后的横截面里只剩退市股，IC 会被噪声吞掉（曾踩到）。
+    common = panel_live.dates.intersection(panel_all.dates)
+    panel_live = type(panel_all)({key: value.loc[common] for key, value in panel_live.fields.items()})
+    panel_all = type(panel_all)({key: value.loc[common] for key, value in panel_all.fields.items()})
     print(
         f"面板：live {len(panel_live.symbols)} 只 / full {len(panel_all.symbols)} 只，"
-        f"{panel_all.dates[0].date()} ~ {panel_all.dates[-1].date()}",
+        f"共同区间 {common[0].date()} ~ {common[-1].date()}（{len(common)} 个交易日）",
         flush=True,
     )
 
@@ -133,7 +139,7 @@ def main(argv=None) -> int:
         "# 幸存者偏差量化：补进退市股后因子表现怎么变",
         "",
         f"- 在市票池：{len(panel_live.symbols)} 只；全票池：{len(panel_all.symbols)} 只（多 {len(panel_all.symbols) - len(panel_live.symbols)} 只退市股）",
-        f"- 区间：{panel_all.dates[0].date()} ~ {panel_all.dates[-1].date()}；IC 观察期 {args.horizon} 日；分层 {args.quantiles} 组",
+        f"- 区间：{common[0].date()} ~ {common[-1].date()}（{len(common)} 个交易日）；IC 观察期 {args.horizon} 日；分层 {args.quantiles} 组",
         "- `ic_diff = full - live`：负值表示只用在市票池会**高估**该因子",
         "",
         to_markdown_table(table, floatfmt="+.4f", index=False),
