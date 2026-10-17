@@ -29,9 +29,16 @@ from quant.factors import (  # noqa: E402
     factor_corr,
     names as factor_names,
 )
+from quant.factors.fundamental import register as register_fundamental  # noqa: E402
 from quant.report import to_markdown_table  # noqa: E402
 
 SPREAD_ROW = "多空(Q最高-Q最低)"
+
+# 基本面因子按需注册：数据没落盘时不让整个脚本挂掉，只是这些因子不可用
+try:
+    register_fundamental()
+except Exception as exc:  # noqa: BLE001 - 缺数据文件属于正常情况
+    print(f"[提示] 基本面因子未注册：{exc}")
 
 
 def build_source(args):

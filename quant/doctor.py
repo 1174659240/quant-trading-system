@@ -692,6 +692,114 @@ def check_project(report: DoctorReport, *, config_path: Path | None = None) -> N
         report.add(group, "CSV 表头", WARN, f"读取失败：{exc}")
 
 
+def check_refdata(report: DoctorReport) -> None:
+    """数据湖自检：universe / 行业 / 估值 / 财务 / 指数成分 / 退市股 六块是否齐全。
+
+    只做**离线**检查（看文件数与关键字段），不联网、不重算，几秒内完成。
+    每块给「已落盘多少 + 还缺什么」，缺的部分给 WARN 而不是 FAIL——数据可以边跑边补。
+    """
+    group = "数据湖"
+    try:
+        import pandas as pd
+    except Exception as exc:  # noqa: BLE001
+        report.add(group, "pandas", FAIL, f"{type(exc).__name__}: {exc}")
+        return
+
+    ref = Path("D:/quant-data/ref")
+    universe_csv = ref / "universe.csv"
+    if universe_csv.is_file():
+        try:
+            uni = pd.read_csv(universe_csv, dtype={"symbol": str})
+            live = int((uni["status"] == 1).sum()) if "status" in uni else -1
+            delisted = int(uni["is_delisted"].sum()) if "is_delisted" in uni else -1
+            as_of = str(uni["as_of"].dropna().iloc[0])[:10] if "as_of" in uni and uni["as_of"].notna().any() else "?"
+            report.add(
+                group,
+                "universe 区间表",
+                OK,
+                f"{len(uni)} 只（在市 {live} / 已退市 {delisted}），基准日 {as_of}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "universe 区间表", FAIL, f"读取失败：{exc}")
+    else:
+        report.add(group, "universe 区间表", WARN, "缺 ref/universe.csv", "python -m quant lake ref --what universe")
+
+    industry = ref / "industry.parquet"
+    if industry.is_file():
+        try:
+            ind = pd.read_parquet(industry)
+            versions = sorted(ind["as_of"].astype(str).unique())
+            industry_text = ind["industry"].astype("string").fillna("").str.strip()
+            empty = int((industry_text == "").sum())
+            report.add(
+                group,
+                "行业 PIT",
+                OK,
+                f"{len(ind)} 行 / {len(versions)} 个年度版本（{versions[0][:10]} ~ {versions[-1][:10]}），"
+                f"空行业 {empty} 行（退市股为主）",
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "行业 PIT", WARN, f"读取失败：{exc}")
+    else:
+        report.add(group, "行业 PIT", WARN, "缺 ref/industry.parquet", "python -m quant lake ref --what industry")
+
+    index_csv = ref / "index_members.csv"
+    if index_csv.is_file():
+        try:
+            members = pd.read_csv(index_csv, dtype={"symbol": str})
+            count = members.groupby("index_code").size().to_dict()
+            report.add(group, "指数成分", OK, f"{len(members)} 行，{len(count)} 个指数：{count}")
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "指数成分", WARN, f"读取失败：{exc}")
+    else:
+        report.add(group, "指数成分", WARN, "缺 ref/index_members.csv", "python -m quant lake index")
+
+    valuation_dir = Path("D:/quant-data/valuation")
+    valuation_files = len(list(valuation_dir.glob("??????.parquet"))) if valuation_dir.is_dir() else 0
+    if valuation_files:
+        state = OK if valuation_files >= 5000 else WARN
+        report.add(
+            group,
+            "估值/isST 日线",
+            state,
+            f"{valuation_files} 只已落盘" + ("" if valuation_files >= 5000 else "（未跑完，可断点续跑）"),
+            None if valuation_files >= 5000 else "python -m quant lake valuation --shard 0/4",
+        )
+    else:
+        report.add(group, "估值/isST 日线", WARN, "尚无估值数据", "python -m quant lake valuation")
+
+    fund_dir = Path("D:/quant-data/fundamentals")
+    periods = {t: len(list((fund_dir / t).glob("????-??-??.parquet"))) for t in ("profit", "balance", "cashflow", "indicator")}
+    latest_name = ""
+    latest_rows = 0
+    try:
+        files = sorted((fund_dir / "profit").glob("????-??-??.parquet"))
+        complete = [p for p in files if len(pd.read_parquet(p, columns=["SECURITY_CODE"])) > 1000]
+        picked = complete[-1] if complete else files[-1]
+        latest_name = picked.stem
+        latest_rows = len(pd.read_parquet(picked))
+    except Exception:  # noqa: BLE001
+        pass
+    detail = " / ".join(f"{k} {v} 期" for k, v in periods.items())
+    if all(v >= 50 for v in periods.values()):
+        report.add(group, "财务三表", OK, f"{detail}；最近完整报告期 {latest_name} 有 {latest_rows} 家公司")
+    elif any(periods.values()):
+        report.add(group, "财务三表", WARN, f"{detail}（期数不足，可断点续跑）", "python -m quant lake fund")
+    else:
+        report.add(group, "财务三表", WARN, "尚无财务数据", "python -m quant lake fund")
+
+    delisted_events = Path("D:/quant-data/delisted/events.csv")
+    if delisted_events.is_file():
+        try:
+            events = pd.read_csv(delisted_events, dtype={"symbol": str})
+            have = int((events["bars"] > 0).sum()) if "bars" in events else -1
+            report.add(group, "退市股日线", OK, f"{len(events)} 只退市股，其中有日线 {have} 只")
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "退市股日线", WARN, f"读取失败：{exc}")
+    else:
+        report.add(group, "退市股日线", WARN, "缺 delisted/events.csv", "python -m quant lake delisted")
+
+
 def check_engine_smoke(report: DoctorReport) -> None:
     """引擎冒烟：真跑一小段合成数据回测，验证 pandas/numpy API 在当前版本下真的可用。"""
     group = "引擎冒烟"
@@ -888,6 +996,7 @@ def run_doctor(
     check_network(report, network=network, timeout=timeout)
     check_packages(report)
     check_project(report, config_path=cfg)
+    check_refdata(report)
     check_engine_smoke(report)
     check_gateway(report, deep=deep, config_path=cfg)
     check_security(report)

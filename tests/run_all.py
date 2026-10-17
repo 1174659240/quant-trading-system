@@ -29,6 +29,7 @@ import test_guard  # noqa: E402
 import test_indicators  # noqa: E402
 import test_lake  # noqa: E402
 import test_parquet  # noqa: E402
+import test_refdata  # noqa: E402
 import test_plugins  # noqa: E402
 import test_web_source  # noqa: E402
 
@@ -43,6 +44,7 @@ SUITES = [
     ("联网行情源", test_web_source),
     ("数据湖", test_lake),
     ("Parquet 存储", test_parquet),
+    ("参考数据", test_refdata),
     ("复权/停牌", test_actions),
 ]
 
