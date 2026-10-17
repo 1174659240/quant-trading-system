@@ -522,6 +522,13 @@ def main(argv=None) -> int:
     t0 = time.perf_counter()
     panel = build_panel(frames, fields=FIELDS)
     panel_seconds = round(time.perf_counter() - t0, 2)
+    # 面板裁到 [start, end]：补进退市股后日期并集会扩到 2014–2026，
+    # 那些只有退市股在交易的横截面会把 IC 和分层一起污染（曾踩到）。
+    window = (panel.dates >= pd.Timestamp(args.start)) & (panel.dates <= pd.Timestamp(args.end))
+    if not window.all():
+        clipped = panel.dates[window]
+        panel = type(panel)({key: value.loc[clipped] for key, value in panel.fields.items()})
+        print(f"  面板按 {args.start} ~ {args.end} 裁剪：{int((~window).sum())} 天不在窗口内", flush=True)
     panel_rows = sum(int(frame.memory_usage(deep=True).sum()) for frame in panel.fields.values())
     print(f"  面板 {len(panel.dates)} 天 × {len(panel.symbols)} 只，耗时 {panel_seconds}s，"
           f"内存约 {panel_rows / 1024**2:.0f} MB", flush=True)
@@ -586,8 +593,16 @@ def main(argv=None) -> int:
     label = "parquet" if fmt == "parquet" else "daily"
     lines.append(f"- 数据：`{args.lake}\\{args.kind}\\{label}`，{load_stats['loaded']} 只 / {load_stats['rows']:,} 行，"
                  f"{args.start} ~ {args.end}")
-    lines.append(f"- 样本口径：**当期存活样本（含幸存者偏差，收益是乐观上界）**；ST 未剔除（无免费数据）；"
-                 f"停牌行在因子计算中剔除、回测中保留但不参与成交")
+    delisted_added = int(load_stats.get("delisted_added") or 0)
+    if delisted_added:
+        lines.append(
+            f"- 样本口径：**已补进 {delisted_added} 只退市股**（票池 {len(frames)} 只），退市持仓按 "
+            f"`{args.delisting_mode}` 结算（last=按最后价 / haircut30=折价30% / total_loss=全损）；"
+            f"ST 未剔除（无免费数据）；停牌行在因子计算中剔除、回测中保留但不参与成交"
+        )
+    else:
+        lines.append(f"- 样本口径：**当期存活样本（含幸存者偏差，收益是乐观上界）**；ST 未剔除（无免费数据）；"
+                     f"停牌行在因子计算中剔除、回测中保留但不参与成交")
     lines.append(f"- 清洗：逐日 MAD 去极值 k=5，标准化；IC 用秩相关，min_count={args.min_count}")
     lines.append("- 基准：全池等权买入持有（首个有效收盘价归一后等权），用于 Beta / Alpha / 信息比率")
     lines.append(f"- 调仓：{args.rebalance}（旧别名经 `normalize_freq` 折算成 pandas 3 可认的频率，如 M→ME）；"
