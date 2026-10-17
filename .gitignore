@@ -1,0 +1,24 @@
+# 运行产物
+results/
+data/cache/
+data/paper/
+data/csv/
+_tmp/
+tmp*/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# 运行期交易产物
+data/orders/

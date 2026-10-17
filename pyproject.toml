@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ashare-quant"
+version = "0.1.0"
+description = "A股轻量量化交易框架：数据层 → 策略（目标权重） → 事件驱动回测 → 绩效与风险 → 纸上交易"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# 真实行情（离线合成数据不需要它）
+data = ["akshare>=1.12"]
+
+[project.scripts]
+aq = "quant.cli:entry"
+
+[tool.setuptools]
+packages = [
+    "quant",
+    "quant.data",
+    "quant.strategy",
+    "quant.backtest",
+    "quant.execution",
+]
+
+[tool.setuptools.package-data]
+"*" = ["*.toml", "*.md"]

@@ -1,0 +1,113 @@
+# 量化交易系统 · 主配置
+#
+# 命令行参数 > 本文件 > 代码默认值。
+# 所有费率/规则都写在明面上，回测结果才可复现。
+
+[backtest]
+start        = "2019-01-01"
+end          = "2024-12-31"
+initial_cash = 500000          # 50 万以内（用户口径）
+# 标的池：A股代码带交易所后缀更清楚（也接受 sh600519 / 600519 / 600519.SH 写法）。
+# 横截面多因子需要足够宽的池子才有意义：这里给了 20 只流动性最好的样本，
+# 真实全市场（沪深A股约 5000 只）等数据到位后替换成从 data/csv 目录自动发现（--universe auto）。
+universe     = [
+  "600519.SH", "601318.SH", "600036.SH", "600900.SH", "601899.SH",
+  "600030.SH", "601166.SH", "600276.SH", "601012.SH", "600887.SH",
+  "000001.SZ", "000002.SZ", "000333.SZ", "000651.SZ", "000858.SZ",
+  "002415.SZ", "002594.SZ", "002304.SZ", "300750.SZ", "300059.SZ",
+]
+benchmark    = "000300.SH"   # 有数据时用于对比，没有就自动用等权基准
+data_dir     = "data/cache"
+result_dir   = "results"
+
+[strategy]
+# 不写 --strategy 时用它。日线低频多因子＝默认策略。
+name = "multifactor"
+
+[costs]
+# A股默认费率（2023 年后）。想跑"零成本理想情况"就把这些调小，但要清楚那是假的。
+commission_rate   = 0.00025   # 佣金 万2.5（双边）
+commission_min    = 5.0       # 单笔最低佣金 5 元
+stamp_duty_rate   = 0.0005    # 印花税 0.05%（仅卖出）
+transfer_fee_rate = 0.00001   # 过户费 0.001%（双边）
+slippage_bps      = 2.0       # 单边滑点 2bp
+
+[rules]
+lot_size                = 100     # 一手 100 股
+t_plus_one              = true    # 当日买入不可当日卖出
+price_limit_pct         = 0.10    # 主板 ±10%
+limit_epsilon           = 0.001
+block_buy_at_limit_up   = true    # 涨停不追
+block_sell_at_limit_down = true   # 跌停不砸
+max_volume_participation = 0.10   # 单笔最多吃掉当日成交量的 10%
+
+[rules.price_limit_overrides]
+# 创业板/科创板 20%，ST 5%（前缀匹配在代码里做，这里给精确代码）
+"300750.SZ" = 0.20
+"300059.SZ" = 0.20
+
+[params]
+# 透传给策略构造函数的超参；不同策略只用自己认的键（不认的键会被忽略并提示）。
+# —— multifactor（默认策略）——
+factors       = "momentum,low_vol,reversal"
+weighting     = "equal"    # equal / ic / ir / auto
+top_k         = 10
+buffer_rank   = 20         # 缓冲区：排在前 20 名就不动，减少换手
+rebalance     = "W-FRI"    # 周频调仓＝日线低频
+gross_exposure = 0.95
+max_weight    = 0.12       # 单票上限（组合级，与 [guard] 的订单级上限互补）
+min_history   = 120        # 上市/数据不足 120 天的标的剔除
+min_universe  = 10
+# 若改用 momentum_rank，可用 lookback = 60 / top_k = 2 / skip = 0
+
+[risk]
+# 风控 overlay（按顺序生效）。0 或删掉该行＝不启用。
+# 参考值：max_weight 0.3 + exposure_cap 0.8 + vol_target 0.10
+# 能把日均仓位从 ~70% 压到 ~20%，代价是牛市跑输。
+max_weight   = 0.30   # 单标的权重上限
+exposure_cap = 0.90   # 总仓位上限
+# vol_target = 0.15   # 目标年化波动（开了会更保守）
+# trailing_stop = 0.15
+# turnover_limit = 0.30
+
+[gateway]
+# 下单通道。默认 csv＝半自动：本地出订单文件，你手工在券商 App 下单，再把成交回报录回来。
+# 这一层完全不碰券商 API，风险最低，也符合"先跑通流程再自动化"的顺序。
+name        = "csv"        # csv | paper | qmt
+dry_run     = true         # true＝只出 <日期>-orders.preview.csv，永不下单
+state_dir   = "data/orders"          # 订单文件与回报模板
+ledger_path = "data/trade/ledger.json"   # 持仓/成交账本（T+1、可用股数、幂等键都在这里）
+initial_cash = 500000      # 账本首次创建时的种子现金
+# confirm_token = "换成一个只有你知道的字符串"   # 不想用 --yes 时可以改成令牌确认
+#
+# —— 可选的 QMT（迅投 miniQMT）通道：需要券商开通 + 本机装客户端 + xtquant ——
+# name = "qmt"
+# qmt_userdata = "C:\\国金QMT交易端\\userdata_mini"
+# qmt_account  = "你的资金账号"
+# qmt_account_type = "STOCK"
+# 注意：本机当前没有装任何券商客户端，也没装 xtquant，qmt 通道只写好没实测；
+# 用它之前务必先 dry_run=true 跑一遍，再用 100 股试单。
+
+[guard]
+# 订单级护栏（写文件/报单之前先过滤）。这里是最内层的防线，
+# 组合级风控（仓位、波动目标）在 [risk] 段。
+max_weight_per_symbol   = 0.20      # 单票目标市值 / 总权益
+max_gross_exposure      = 1.00      # 总仓位上限（50 万以内，不允许上杠杆）
+min_cash_ratio          = 0.02      # 永远留 2% 现金（应对费用与波动）
+max_orders_per_day      = 50        # 单日最多 50 笔委托
+max_single_order_value  = 100000.0  # 单笔金额上限（10 万）
+min_order_value         = 5000.0    # 单笔金额下限（低于此不折腾）
+max_price_deviation_pct = 0.05      # 限价偏离最新价超过 5% 直接拒绝（防手滑）
+max_volume_participation = 0.05     # 单笔最多占当日成交额 5%
+max_turnover_of_equity  = 0.30      # 单日换手上限（30% 权益）
+require_limit_price     = true      # 必须给限价，不接市价单
+session_only            = false     # true＝只在连续竞价时段（9:30-11:30/13:00-15:00）允许
+# allowed_symbols = ["600519.SH", "000001.SZ"]   # 白名单（非空则只允许这些）
+# banned_symbols  = ["300750.SZ"]                # 黑名单
+
+[plugins]
+# 自定义扩展（策略 / 数据源 / 风控 overlay）的加载入口。
+# autoload = true 时自动加载工程根的 plugins/ 目录；dirs / files 可再加路径（相对工程根）。
+autoload = true
+dirs     = []
+files    = []
