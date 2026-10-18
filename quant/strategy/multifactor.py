@@ -134,6 +134,7 @@ class MultiFactorStrategy(Strategy):
         min_amount: float = 0.0,
         min_history: int = 120,
         min_universe: int = 10,
+        min_cross_count: int | None = None,
         exclude: pd.DataFrame | None = None,
     ) -> None:
         specs = _parse_factors(factors)
@@ -194,6 +195,9 @@ class MultiFactorStrategy(Strategy):
         self.min_amount = float(min_amount)
         self.min_history = int(min_history)
         self.min_universe = int(min_universe)
+        # 横截面去极值/标准化要求的最少有效股票数。分档因子（如最小 5% 市值档）天然只有
+        # 十几只候选，默认 min(20, N//2) 会把整列打成 NaN，必须允许显式调低。
+        self.min_cross_count = int(min_cross_count) if min_cross_count else None
         # 额外剔除矩阵（True=当日不可选，例如 ST）。按日期/代码 reindex，缺格视为不剔除。
         self.exclude = exclude
         self.last_diagnostics: dict[str, Any] = {}
@@ -289,7 +293,7 @@ class MultiFactorStrategy(Strategy):
                     winsorize_n=self.winsorize_n,
                     standardize_=True,
                 )
-        min_count = max(5, min(20, len(panel.symbols) // 2))
+        min_count = self.min_cross_count if self.min_cross_count else max(5, min(20, len(panel.symbols) // 2))
         # 行业 + 市值中性化必须在「所有因子都算完之后」一次性做：FWL 两步法对每个因子
         # 共用同一份组均值，逐因子调用会重复算 24 遍横截面的行业均值。
         deferred = self.neutralize is not None
@@ -464,8 +468,13 @@ class MultiFactorStrategy(Strategy):
             return []
         edges = np.linspace(0, count, quantiles + 1).round().astype(int)
         bucket = int(self.select_bucket)
-        members = list(ranked[int(edges[bucket - 1]): int(edges[bucket])])
-        if bucket * 2 <= quantiles:
+        # ranked 是降序（分数最高在前）；先翻成升序，第 1 组才是「分数最低」的 20%。
+        ascending = list(ranked)[::-1]
+        members = ascending[int(edges[bucket - 1]): int(edges[bucket])]
+        # 组内「越极端越靠前」：最低分组保持升序（分数最低的先选），其余反转为降序
+        # （分数最高的先选）。早期版本把低分组的反转规则写反了，导致「最高分组」实际
+        # 从组内最不极端的一只开始选，等于系统性买在分界线上（2026-10-18 定位并修正）。
+        if bucket * 2 > quantiles:
             members = members[::-1]
         return members
 

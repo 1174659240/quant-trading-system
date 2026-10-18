@@ -151,6 +151,42 @@ def collect() -> dict[str, Any]:
         )
     )
 
+    # 4b. PIT 分红（任务一股息率用）
+    div_path = REF / "dividends.parquet"
+    if div_path.exists():
+        div = pd.read_parquet(div_path, columns=["symbol", "report_date", "ex_date"])
+        layers.append(
+            _layer(
+                "dividends",
+                {"files": 1, "rows": int(len(div))},
+                path=str(div_path),
+                symbols=int(div["symbol"].nunique()),
+                first=str(div["report_date"].min())[:10],
+                last=str(div["report_date"].max())[:10],
+                source="eastmoney datacenter RPT_SHAREBONUS_DET",
+                pit="ex_date 生效，滚动 365 个自然日；report_date/ex_date > 2024-12-31 已裁掉（holdout）",
+                gap="无北交所；只有「已实施」行，预案期不可见",
+            )
+        )
+
+    # 4c. 换手率宽表（valuation 的 turn 列透视，任务一/二共用）
+    turn_path = REF / "turn_panel.parquet"
+    if turn_path.exists():
+        turn = pd.read_parquet(turn_path)
+        layers.append(
+            _layer(
+                "turn_panel",
+                {"files": 1, "rows": int(len(turn))},
+                path=str(turn_path),
+                symbols=int(turn.shape[1] - 1),
+                first=str(turn["date"].iloc[0])[:10],
+                last=str(turn["date"].iloc[-1])[:10],
+                source="valuation/*.parquet 的 turn 列 pivot（2014-01-02~2024-12-31）",
+                pit="逐日快照",
+                gap="与 valuation 层同源（无北交所）；153 只在 2024-12-31 后上市，窗口内无数据被 pivot 丢弃",
+            )
+        )
+
     # 5. 估值 / isST
     val_root = valuation.VALUATION_DIR
     val_files = sorted(val_root.glob("??????.parquet"))

@@ -183,13 +183,13 @@ def test_bucket_members_follow_quantile_numbering():
     top = MultiFactorStrategy(select_bucket=5, select_quantiles=5, top_k=5, min_universe=5)
     bottom = MultiFactorStrategy(select_bucket=1, select_quantiles=5, top_k=5, min_universe=5)
     middle = MultiFactorStrategy(select_bucket=3, select_quantiles=5, top_k=5, min_universe=5)
-    assert top._bucket_members(ranked) == ranked[80:100]
+    assert top._bucket_members(ranked) == ranked[0:20]
     # 最低分组里「越极端越靠前」= 分数最低的先选
-    assert bottom._bucket_members(ranked) == list(reversed(ranked[0:20]))
+    assert bottom._bucket_members(ranked) == list(reversed(ranked[80:100]))
     assert middle._bucket_members(ranked) == ranked[40:60]
     # 样本不够切组时不硬切
     assert top._bucket_members(ranked[:9]) == []
-    assert top._bucket_members(ranked[:10]) == ranked[8:10]
+    assert top._bucket_members(ranked[:10]) == ranked[0:2]
 
 
 def test_bucket_validation_and_backtest_picks():

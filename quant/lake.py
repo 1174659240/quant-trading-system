@@ -786,6 +786,9 @@ _HELP = """lake —— 本地数据湖
                                                            # 参考数据：universe 区间表 / 行业 PIT 快照 / 股本 / 申万快照
   python -m quant lake mainfin     [--start 2013-03-31] [--force] [--verify]
                                                            # 主要财务指标（金融股 ROE/EPS/BPS/股本，源自 MAINFINADATA）
+  python -m quant lake dividends   [--start 2013-12-31] [--end 2024-12-31] [--force]
+                                                           # PIT 分红明细（东财 RPT_SHAREBONUS_DET，ex_date 生效）
+  python -m quant lake turnpanel   [--cutoff 2024-12-31]   # 换手率宽表（valuation 的 turn 列透视，按 holdout 裁剪）
   python -m quant lake valuation   [--start 2014-01-01] [--end YYYY-MM-DD] [--limit N] [--pause 0.1]
                                                            # 估值/ST 日频快照（peTTM/pbMRQ/isST），断点续跑
   python -m quant lake fund        [--tables profit,balance,cashflow] [--start 2013-03-31] [--limit N]
@@ -864,6 +867,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--limit", type=int, default=None)
         parser.add_argument("--pause", type=float, default=0.05)
         parser.add_argument("--force", action="store_true", help="已落盘的也重抓")
+    if action == "dividends":
+        parser.add_argument("--start", default="2013-12-31")
+        parser.add_argument("--end", default="2024-12-31")
+        parser.add_argument("--force", action="store_true")
+    if action == "turnpanel":
+        parser.add_argument("--cutoff", default="2024-12-31")
+        parser.add_argument("--start", default="2014-01-01")
     if action == "index":
         parser.add_argument("--codes", default=None, help="逗号分隔指数代码，缺省用内置清单")
         parser.add_argument("--no-merge", action="store_true", help="不与既有快照合并，整体覆盖")
@@ -1032,6 +1042,22 @@ def main(argv: list[str] | None = None) -> int:
                 last = frame["report_date"].max()
                 print(frame[frame["report_date"] == last].to_string(index=False))
             data = summary
+    elif action == "dividends":
+        from . import dividends
+
+        summary = dividends.fetch(args.start, args.end, resume=not args.force)
+        data = {k: v for k, v in summary.items() if k != "log"}
+        print(
+            f"\n分红明细：{data['periods']} 期 / {data['rows']} 行 / {data['symbols']} 只 → {dividends.DIVIDENDS}"
+        )
+    elif action == "turnpanel":
+        from . import valuation
+
+        data = valuation.build_turn_panel(cutoff=args.cutoff, start=args.start)
+        print(
+            f"\n换手宽表：{data['rows']} 行 × {data['symbols']} 列"
+            f"（{data['first']} ~ {data['last']}，{data['mb']} MB）→ {data['path']}"
+        )
     elif action == "index":
         from . import index_members
 

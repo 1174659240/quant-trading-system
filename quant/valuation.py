@@ -226,6 +226,45 @@ def st_matrix(symbols: Sequence[str] | None = None) -> pd.DataFrame:
     return wide.fillna(0.0).astype(int).astype(bool)
 
 
+def build_turn_panel(
+    out: Path | None = None,
+    *,
+    start: str = "2014-01-01",
+    cutoff: str = "2024-12-31",
+) -> dict:
+    """把逐股 ``turn`` 列透视成「交易日 × 代码」宽表并落盘（任务一/二的换手族因子用）。
+
+    只读 ``date/symbol/turn`` 三列，12.4M 行约 2 秒扫描 + 6 秒透视。
+    ``cutoff`` 默认 2024-12-31：holdout（2025 起）不进入任何因子面板。
+    """
+    target = Path(out) if out is not None else REF_DIR / "turn_panel.parquet"
+    files = sorted(VALUATION_DIR.glob("??????.parquet"))
+    frames = [pd.read_parquet(path, columns=["date", "symbol", "turn"]) for path in files]
+    if not frames:
+        raise RuntimeError(f"{VALUATION_DIR} 下没有估值文件，先跑 `python -m quant lake valuation`")
+    raw = pd.concat(frames, ignore_index=True)
+    raw["date"] = pd.to_datetime(raw["date"])
+    raw = raw[(raw["date"] >= pd.Timestamp(start)) & (raw["date"] <= pd.Timestamp(cutoff))]
+    wide = (
+        raw.pivot(index="date", columns="symbol", values="turn")
+        .sort_index()
+        .sort_index(axis=1)
+        .reset_index()
+    )
+    value_cols = [c for c in wide.columns if c != "date"]
+    wide[value_cols] = wide[value_cols].astype("float32")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    wide.to_parquet(target, index=False)
+    return {
+        "path": str(target),
+        "rows": int(len(wide)),
+        "symbols": int(wide.shape[1] - 1),
+        "first": str(wide["date"].iloc[0])[:10] if len(wide) else None,
+        "last": str(wide["date"].iloc[-1])[:10] if len(wide) else None,
+        "mb": round(target.stat().st_size / 1024 / 1024, 1),
+    }
+
+
 def load(symbols: Sequence[str] | None = None) -> pd.DataFrame:
     """读取估值面板（按 symbol 过滤）；只读已落盘文件。"""
     wanted = None if symbols is None else {str(s).zfill(6) for s in symbols}
