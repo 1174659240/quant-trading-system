@@ -855,6 +855,46 @@ def check_refdata(report: DoctorReport) -> None:
     else:
         report.add(group, "退市股日线", WARN, "缺 delisted/events.csv", "python -m quant lake delisted")
 
+    _check_events(report, group)
+
+
+def _check_events(report: DoctorReport, group: str) -> None:
+    """事件层：六张表是否存在、行数、PIT 可见日是否齐全、是否有 2025+ 行。"""
+    try:
+        import pandas as pd
+
+        from quant import events as ev
+    except Exception as exc:  # noqa: BLE001
+        report.add(group, "事件层", WARN, f"导入失败：{exc}")
+        return
+    missing = [name for name in ev.TABLES if not ev.FILES[name].is_file()]
+    if missing:
+        report.add(group, "事件层", WARN, f"缺 {len(missing)} 张表：{', '.join(missing)}", "python -m quant lake events")
+        return
+    try:
+        parts = []
+        total = 0
+        pit_missing = 0
+        holdout_rows = 0
+        for name in ev.TABLES:
+            frame = pd.read_parquet(ev.FILES[name], columns=["event_date", "available_date"])
+            total += len(frame)
+            parts.append(f"{name} {len(frame):,}")
+            pit_missing += int(frame["available_date"].isna().sum())
+            holdout_rows += int(
+                (pd.to_datetime(frame["available_date"], errors="coerce") >= ev.HOLDOUT_START).sum()
+            )
+        detail = "、".join(parts) + f"；合计 {total:,} 行，其中 2025+ 可见 {holdout_rows:,} 行（研究默认裁掉）"
+        if pit_missing > 100:
+            report.add(group, "事件层", WARN, f"{detail}；{pit_missing} 行缺 PIT 可见日", "python -m quant lake events")
+        elif pit_missing:
+            # 已知：增减持的可见日 = 变动日 +2 交易日，落在日历末端的事件推不出来（已写进偏差声明）
+            report.add(group, "事件层", OK, f"{detail}；{pit_missing} 行在交易日历末端无可见日（已声明）")
+        else:
+            report.add(group, "事件层", OK, detail)
+    except Exception as exc:  # noqa: BLE001
+        report.add(group, "事件层", WARN, f"读取失败：{exc}")
+
 
 def check_engine_smoke(report: DoctorReport) -> None:
     """引擎冒烟：真跑一小段合成数据回测，验证 pandas/numpy API 在当前版本下真的可用。"""

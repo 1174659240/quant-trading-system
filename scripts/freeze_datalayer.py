@@ -187,6 +187,31 @@ def collect() -> dict[str, Any]:
             )
         )
 
+    # 4d. 事件层（龙虎榜/回购/增减持/ST 翻转/送转分红）
+    events_dir = Path("D:/quant-data/events")
+    if events_dir.exists():
+        from quant import events as event_layer
+
+        table = event_layer.summary()
+        layers.append(
+            _layer(
+                "events",
+                {"files": int(table["exists"].sum()), "rows": int(table.loc[table["exists"], "rows"].sum())},
+                path=str(events_dir),
+                symbols=int(table.loc[table["exists"], "symbols"].max()) if len(table) else 0,
+                first=str(table["start"].min())[:10],
+                last=str(table["end"].max())[:10],
+                tables="、".join(f"{row.event}({row.rows})" for row in table.itertuples() if row.exists),
+                source="akshare stock_lhb_detail_em / stock_lhb_jgmmtj_em / stock_repurchase_em / "
+                       "stock_hold_management_detail_em / stock_fhps_em；ST 由 valuation.isST 翻转",
+                pit="双日期：event_date 发生日 + available_date 可见日"
+                    "（龙虎榜=上榜日、回购=最新公告日、增减持=变动日+2 交易日、ST=翻转日、分红=预案公告日）；"
+                    "研究默认裁 <= 2024-12-31（holdout 锁定）",
+                gap="回测/因子只用 available_date；lhb 的 post_* 为未来信息仅供事件研究；"
+                    f"hold 有 {int(table.loc[table.event == 'hold', 'pit_missing'].sum())} 行因超出交易日历无可见日",
+            )
+        )
+
     # 5. 估值 / isST
     val_root = valuation.VALUATION_DIR
     val_files = sorted(val_root.glob("??????.parquet"))

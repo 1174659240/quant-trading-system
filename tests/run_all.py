@@ -23,6 +23,7 @@ setup_console()
 import test_actions  # noqa: E402
 import test_backtest  # noqa: E402
 import test_data  # noqa: E402
+import test_events  # noqa: E402
 import test_factors  # noqa: E402
 import test_gateway  # noqa: E402
 import test_guard  # noqa: E402
@@ -47,6 +48,7 @@ SUITES = [
     ("数据湖", test_lake),
     ("Parquet 存储", test_parquet),
     ("参考数据", test_refdata),
+    ("事件层", test_events),
     ("复权/停牌", test_actions),
 ]
 

@@ -795,6 +795,8 @@ _HELP = """lake —— 本地数据湖
                                                            # 财务三表（东财 RPT_F10_FINANCE_*），按报告期落盘
   python -m quant lake index       [--codes 000300,000905]  # 指数成分快照（只有当前版本，带幸存者偏差）
   python -m quant lake delisted    [--limit N] [--events-only]  # 退市股日线（后复权）+ 退市事件表
+  python -m quant lake events      [--what lhb,repurchase,hold,st,fhps,all] [--start 2014-01-01]
+                                   [--summary]  # 事件层：龙虎榜/回购/增减持/ST 翻转/送转分红（双日期字段）
   python -m quant lake calendar    # 拉交易日历（停牌补齐用）
   python -m quant lake actions     # 拉除权除息事件表（复权用）
   python -m quant lake crawl       [--limit N] [--pause 0.3] [--force] [--source tencent]
@@ -882,6 +884,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--pause", type=float, default=0.05)
         parser.add_argument("--events-only", action="store_true", help="只重建事件表，不抓日线")
         parser.add_argument("--force", action="store_true")
+    if action == "events":
+        parser.add_argument("--what", default="all",
+                            help="逗号分隔：lhb,repurchase,hold,st,fhps,all")
+        parser.add_argument("--start", default="2014-01-01")
+        parser.add_argument("--end", default=None)
+        parser.add_argument("--force", action="store_true")
+        parser.add_argument("--summary", action="store_true", help="只打印已落盘事件表概况")
     if action == "parquet":
         parser.add_argument("--kinds", default="processed", help="逗号分隔：processed,holdout")
         parser.add_argument("--overwrite", action="store_true")
@@ -1090,6 +1099,28 @@ def main(argv: list[str] | None = None) -> int:
             f"退市事件表：{e['targets']} 只（有日线 {e['with_bars']} / 无 {e['without_bars']}），"
             f"日线合计 {e['rows']} 行，退市日-最后交易日 中位 {e['gap_median']} 天 → {e['written']}"
         )
+    elif action == "events":
+        from . import events
+
+        wanted = [w.strip() for w in args.what.split(",") if w.strip()]
+        if "all" in wanted:
+            wanted = ["lhb", "repurchase", "hold", "st", "fhps"]
+        data = {"what": wanted}
+        if not args.summary:
+            if "lhb" in wanted:
+                data["lhb"] = events.fetch_lhb(start=args.start, end=args.end, resume=not args.force)
+            if "repurchase" in wanted:
+                data["repurchase"] = events.fetch_repurchase()
+            if "hold" in wanted:
+                data["hold"] = events.fetch_hold()
+            if "st" in wanted:
+                data["st"] = events.build_st(start=args.start)
+            if "fhps" in wanted:
+                data["fhps"] = events.fetch_fhps(start="2013-12-31", resume=not args.force)
+        table = events.summary()
+        print("\n事件表：")
+        print(table.to_string(index=False))
+        data["summary"] = table.to_dict("records")
     elif action == "parquet":
         from . import parquet_store
 
