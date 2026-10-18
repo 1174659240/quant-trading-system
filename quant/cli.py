@@ -33,6 +33,7 @@ SUBCOMMANDS = (
     "factor",
     "factor-market",
     "factor-bias",
+    "crisis",
     "optimize",
     "paper",
     "trade",
@@ -49,6 +50,7 @@ _HELP = {
     "factor": "因子研究报告：IC / 分层收益 / 因子相关性",
     "factor-market": "全市场因子研究 + 多因子回测（只用 processed 层）",
     "factor-bias": "幸存者偏差量化：补进退市股后因子 IC/分层怎么变",
+    "crisis": "危机状态检查：六分量分数 + 一键清仓清单（不下单）",
     "optimize": "网格搜索 + 样本内/样本外验证",
     "paper": "纸上交易：plan / apply / status",
     "trade": "半自动实盘：plan / confirm / record / status / reconcile / limits",
@@ -131,6 +133,8 @@ def _dispatch(name: str, argv: list[str]) -> int:
         from scripts import factor_market as module
     elif name == "factor-bias":
         from scripts import factor_bias as module
+    elif name == "crisis":
+        from scripts import crisis_check as module
     elif name == "optimize":
         from scripts import optimize as module
     elif name == "paper":

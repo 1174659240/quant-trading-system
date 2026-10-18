@@ -21,8 +21,8 @@
 │  ├─ doctor.py            环境自检
 │  └─ plugins.py  cli.py   策略插件注册表、命令行
 ├─ scripts/                fetch_data / run_backtest / optimize / paper_trade / factors / trade
-├─ tests/                  142 项离线自测（纯 assert；Parquet 套件在无 pyarrow 时自动跳过）
-├─ docs/                   实盘接入与合规、插件与安全审计、数据湖落地记录、全市场因子研究记录、多因子最小完备集-数据设计、存储格式核对-Parquet
+├─ tests/                  174 项离线自测（纯 assert；Parquet 套件在无 pyarrow 时自动跳过）
+├─ docs/                   实盘接入与合规、插件与安全审计、数据湖落地记录、全市场因子研究记录、红利低波与容量因子研究报告、事件因子研究报告、风险清仓与前沿因子、数据层齐全度核对表
 ├─ config.toml             策略、成本、风控、通道、护栏配置
 └─ data/、results/         运行产物（已 gitignore）
 ```
