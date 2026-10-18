@@ -782,8 +782,10 @@ _HELP = """lake —— 本地数据湖
 用法：
   python -m quant lake init        [--root D:/quant-data]
   python -m quant lake universe    [--root ...]            # 抓全市场代码表
-  python -m quant lake ref         [--what universe,industry] [--start-year 2014] [--as-of YYYY-MM-DD]
-                                                           # 参考数据：universe 区间表 / 行业 PIT 快照
+  python -m quant lake ref         [--what universe,industry,shares,sw] [--start-year 2014] [--as-of YYYY-MM-DD]
+                                                           # 参考数据：universe 区间表 / 行业 PIT 快照 / 股本 / 申万快照
+  python -m quant lake mainfin     [--start 2013-03-31] [--force] [--verify]
+                                                           # 主要财务指标（金融股 ROE/EPS/BPS/股本，源自 MAINFINADATA）
   python -m quant lake valuation   [--start 2014-01-01] [--end YYYY-MM-DD] [--limit N] [--pause 0.1]
                                                            # 估值/ST 日频快照（peTTM/pbMRQ/isST），断点续跑
   python -m quant lake fund        [--tables profit,balance,cashflow] [--start 2013-03-31] [--limit N]
@@ -832,9 +834,21 @@ def main(argv: list[str] | None = None) -> int:
     if action in ("actions", "calendar"):
         parser.add_argument("--force", action="store_true")
     if action == "ref":
-        parser.add_argument("--what", default="universe,industry", help="逗号分隔：universe,industry")
+        parser.add_argument(
+            "--what",
+            default="universe,industry",
+            help="逗号分隔：universe,industry,shares,sw",
+        )
         parser.add_argument("--start-year", type=int, default=2014, help="行业快照起始年份")
         parser.add_argument("--as-of", default=None, help="基准日 YYYY-MM-DD，缺省今天")
+        parser.add_argument("--check-bs", type=int, default=30, help="（已弃用，保留兼容）")
+        parser.add_argument("--share-pages", type=int, default=None, help="股本变动表最多翻多少页（调试用）")
+        parser.add_argument("--force-sw", action="store_true", help="申万快照重抓")
+    if action == "mainfin":
+        parser.add_argument("--start", default="2013-03-31")
+        parser.add_argument("--end", default=None)
+        parser.add_argument("--force", action="store_true", help="已落盘的也重建")
+        parser.add_argument("--verify", action="store_true", help="只打印金融股抽查")
     if action == "valuation":
         parser.add_argument("--start", default="2014-01-01")
         parser.add_argument("--end", default=None)
@@ -895,8 +909,28 @@ def main(argv: list[str] | None = None) -> int:
                 i = data["industry"]
                 print(f"industry：{i['rows']} 行 / {i['dates']} 版，最新版非空行业 {i['live_covered']} 只 → {i['written'].get('parquet') or i['written']['csv']}")
                 print(f"  各版条数：{i['per_date']}")
+            elif what == "shares":
+                data["shares"] = refdata.build_shares(limit=args.share_pages)
+                s = data["shares"]
+                print(
+                    f"shares：{s['rows']} 行 / {s['real_symbols']} 个真实代码（东财内部码 {s['bogus_symbols']}）"
+                    f" / 变动日 {s['first']} ~ {s['last']}，在 universe 内 {s['in_universe']}，"
+                    f"universe 缺 {s['universe_missing']} → {s['written'].get('parquet') or s['written']['csv']}"
+                )
+                print(f"  PIT 取法：只认 change_date <= t 的最近一条（shares_at(frame, day)）")
+            elif what == "sw":
+                if refdata.SW_CSV.exists() and not args.force_sw:
+                    print(f"申万快照已存在（{refdata.SW_CSV}），加 --force-sw 重抓")
+                    data["sw"] = {"skipped": True, "path": str(refdata.SW_CSV)}
+                else:
+                    data["sw"] = refdata.build_sw_industry()
+                    w = data["sw"]
+                    print(
+                        f"sw：{w['industries']} 个一级行业 / {w['members']} 条成分 / "
+                        f"覆盖 {w['covered_symbols']} 只，失败 {len(w['failed'])} → {w['written']}"
+                    )
             else:
-                print(f"未知参考数据：{what}（可选 universe,industry）")
+                print(f"未知参考数据：{what}（可选 universe,industry,shares,sw）")
                 return 1
         data["manifest"] = str(refdata.write_manifest(data))
     elif action == "crawl":
@@ -978,6 +1012,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ✗ {key} {msg}")
         print(f"  目录：{summary['dir']}")
         data = summary
+    elif action == "mainfin":
+        from . import mainfin
+
+        if args.verify:
+            frame = mainfin.verify()
+            print(frame.to_string(index=False) if not frame.empty else "（无数据，先跑 mainfin）")
+            data = {"verify_rows": int(len(frame))}
+        else:
+            summary = mainfin.build(start=args.start, end=args.end, force=args.force)
+            print(
+                f"\n主要财务指标：写入 {summary['written']} 期（跳过 {summary['skipped']}）/ "
+                f"{summary['rows']} 行，缺源 {len(summary['missing_source'])}（用时 {summary['seconds']}s）"
+            )
+            print(f"  目录：{summary['dir']}")
+            frame = mainfin.verify()
+            if not frame.empty:
+                print("  金融股抽查（最近一期）：")
+                last = frame["report_date"].max()
+                print(frame[frame["report_date"] == last].to_string(index=False))
+            data = summary
     elif action == "index":
         from . import index_members
 

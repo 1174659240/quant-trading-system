@@ -693,7 +693,7 @@ def check_project(report: DoctorReport, *, config_path: Path | None = None) -> N
 
 
 def check_refdata(report: DoctorReport) -> None:
-    """数据湖自检：universe / 行业 / 估值 / 财务 / 指数成分 / 退市股 六块是否齐全。
+    """数据湖自检：universe / 行业 / 股本 / 申万 / 估值 / 财务 / 金融股指标 / 指数成分 / 退市股。
 
     只做**离线**检查（看文件数与关键字段），不联网、不重算，几秒内完成。
     每块给「已落盘多少 + 还缺什么」，缺的部分给 WARN 而不是 FAIL——数据可以边跑边补。
@@ -743,6 +743,41 @@ def check_refdata(report: DoctorReport) -> None:
     else:
         report.add(group, "行业 PIT", WARN, "缺 ref/industry.parquet", "python -m quant lake ref --what industry")
 
+    shares_csv = ref / "shares.csv"
+    if shares_csv.is_file():
+        try:
+            shares = pd.read_csv(shares_csv, dtype={"symbol": str, "change_date": str})
+            real = shares[shares["is_real_code"] == 1] if "is_real_code" in shares else shares
+            latest = str(shares["change_date"].max())[:10] if len(shares) else "?"
+            per = real.groupby("symbol").size()
+            report.add(
+                group,
+                "股本（PIT）",
+                OK,
+                f"{len(shares)} 条变动 / {real['symbol'].nunique()} 只，"
+                f"每股中位 {float(per.median()):.0f} 条，最新变动日 {latest}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "股本（PIT）", FAIL, f"读取失败：{exc}")
+    else:
+        report.add(group, "股本（PIT）", WARN, "缺 ref/shares.csv", "python -m quant lake ref --what shares")
+
+    sw_csv = ref / "sw_industry.csv"
+    if sw_csv.is_file():
+        try:
+            sw = pd.read_csv(sw_csv, dtype={"symbol": str, "sw_code": str})
+            as_of = str(sw["as_of"].iloc[0])[:10] if "as_of" in sw and len(sw) else "?"
+            report.add(
+                group,
+                "申万快照",
+                OK,
+                f"{sw['sw_code'].nunique()} 个一级行业 / {len(sw)} 条成分 / {sw['symbol'].nunique()} 只，落盘 {as_of}（仅当期，无历史）",
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "申万快照", WARN, f"读取失败：{exc}")
+    else:
+        report.add(group, "申万快照", WARN, "缺 ref/sw_industry.csv", "python -m quant lake ref --what sw")
+
     index_csv = ref / "index_members.csv"
     if index_csv.is_file():
         try:
@@ -787,6 +822,27 @@ def check_refdata(report: DoctorReport) -> None:
         report.add(group, "财务三表", WARN, f"{detail}（期数不足，可断点续跑）", "python -m quant lake fund")
     else:
         report.add(group, "财务三表", WARN, "尚无财务数据", "python -m quant lake fund")
+
+    mainfin_dir = fund_dir / "mainfin"
+    mainfin_files = sorted(mainfin_dir.glob("????-??-??.parquet")) if mainfin_dir.is_dir() else []
+    if mainfin_files:
+        try:
+            # 只看完整披露的期（2026-09-30 这类当期只有几十家，不代表覆盖率）
+            complete = [p for p in mainfin_files if len(pd.read_parquet(p, columns=["SECURITY_CODE"])) > 1000]
+            last = complete[-1] if complete else mainfin_files[-1]
+            frame = pd.read_parquet(last)
+            fin = frame[frame["ORG_TYPE"].astype(str).isin(["银行", "保险", "证券"])]
+            roe = int(pd.to_numeric(fin["ROEJQ"], errors="coerce").notna().sum()) if "ROEJQ" in fin else -1
+            report.add(
+                group,
+                "主要财务指标（金融股）",
+                OK,
+                f"{len(mainfin_files)} 期，最近一期 {last.stem} 金融业 {len(fin)} 家、ROE 非空 {roe} 家",
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add(group, "主要财务指标（金融股）", WARN, f"读取失败：{exc}")
+    else:
+        report.add(group, "主要财务指标（金融股）", WARN, "缺 fundamentals/mainfin", "python -m quant mainfin")
 
     delisted_events = Path("D:/quant-data/delisted/events.csv")
     if delisted_events.is_file():

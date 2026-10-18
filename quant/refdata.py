@@ -295,3 +295,257 @@ def industry_asof(frame: pd.DataFrame, day: str) -> pd.DataFrame:
     if not av:
         raise KeyError(f"{day} 之前没有行业快照")
     return frame[frame["as_of"] == av[-1]]
+
+
+# ---------------------------------------------------------------- 股本（shares）
+
+SHARES_CSV = REF_DIR / "shares.csv"
+EM_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+EM_SHARE_REPORT = "RPT_F10_EH_EQUITY"
+EM_SHARE_COLUMNS = (
+    "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,ORG_CODE,END_DATE,CHANGE_REASON,"
+    "TOTAL_SHARES,LISTED_A_SHARES,LIMITED_SHARES,H_FREE_SHARE,B_FREE_SHARE,SECURITY_TYPE_CODE"
+)
+EM_SHARE_FILTER = '(SECURITY_TYPE_CODE in ("058001001","058001002"))(END_DATE>=\'{start}\')'
+EM_PAGE_SIZE = 500
+
+
+def _exchange_of(code: str) -> str:
+    c = str(code).zfill(6)
+    if c.startswith(("6", "9")):
+        return "SH"
+    if c.startswith(("0", "2", "3")):
+        return "SZ"
+    return "BJ"
+
+
+def _em_page(session, page: int, start: str, *, retries: int = 4):
+    params = {
+        "reportName": EM_SHARE_REPORT,
+        "columns": EM_SHARE_COLUMNS,
+        "pageSize": str(EM_PAGE_SIZE),
+        "pageNumber": str(page),
+        "source": "HSF10",
+        "client": "PC",
+        "filter": EM_SHARE_FILTER.format(start=start),
+    }
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            payload = session.get(EM_URL, params=params, timeout=45).json()
+            result = payload.get("result") or {}
+            return pd.DataFrame(result.get("data") or []), int(result.get("pages") or 0)
+        except Exception as exc:  # noqa: BLE001 - 网络抖动统一重试
+            last = exc
+            time.sleep(1.0 * attempt)
+    raise RuntimeError(f"股本变动表第 {page} 页失败：{last}")
+
+
+def build_shares(
+    *,
+    start: str = "2014-01-01",
+    pause: float = 0.05,
+    limit: int | None = None,
+    verbose: bool = True,
+) -> dict:
+    """股本变动时间序列（**PIT**）：``symbol / change_date / total_share / float_share``。
+
+    数据源：东财数据中心 ``RPT_F10_EH_EQUITY``（股本结构变动表），按 ``END_DATE``
+    记每次变动的总股本与流通 A 股。为什么不用别处：
+
+    * ``bs.query_profit_data`` 只能逐股查（``code=""`` 报 10004006），5563 只 × 55 期
+      ≈ 306k 次调用 ≈ 30 小时 → 不可行；
+    * ``MAINFINADATA.TOTAL_SHARE`` / ``A_FREE_SHARE`` 是**最新股本**（实测 600519 在
+      2013–2026 全部报告期都是 1,252,270,000，605369 在 2020 年报就显示 2023 年才有的
+      2.2 亿股）→ 直接当历史市值会引入未来信息，已否决；
+    * ``bs.query_profit_data`` 的 ``liqaShare`` 抽样 65 个观测 P90 偏差 140%
+      （601577 的 liqaShare 恰为总股本的 1/10）→ 单位/口径不稳，只能当旁证。
+
+    口径提醒：``END_DATE`` 可能晚于落盘日（已公告未实施的限售股上市），下游必须
+    按“只用 ``change_date <= t`` 的最近一条”取值，不能用最新一条回填历史。
+    """
+    import requests
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"})
+
+    first, pages = _em_page(session, 1, start)
+    frames = [first]
+    total_pages = max(pages, 1)
+    if limit:
+        total_pages = min(total_pages, limit)
+    t0 = time.perf_counter()
+    for page in range(2, total_pages + 1):
+        if pause:
+            time.sleep(pause)
+        chunk, _ = _em_page(session, page, start)
+        frames.append(chunk)
+        if verbose and page % 25 == 0:
+            got = sum(len(f) for f in frames)
+            print(f"  股本变动 {page}/{total_pages} 页，累计 {got} 行", flush=True)
+
+    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if raw.empty:
+        raise RuntimeError("股本变动表为空，检查东财接口")
+
+    raw["symbol"] = raw["SECURITY_CODE"].astype(str).str.zfill(6)
+    out = pd.DataFrame(
+        {
+            "symbol": raw["symbol"],
+            "exchange": raw["symbol"].map(_exchange_of),
+            "code_name": raw["SECURITY_NAME_ABBR"].astype(str),
+            "change_date": pd.to_datetime(raw["END_DATE"], errors="coerce").dt.strftime("%Y-%m-%d"),
+            "reason": raw["CHANGE_REASON"].fillna("").astype(str),
+            "total_share": pd.to_numeric(raw["TOTAL_SHARES"], errors="coerce"),
+            "float_share": pd.to_numeric(raw["LISTED_A_SHARES"], errors="coerce"),
+            "limited_share": pd.to_numeric(raw["LIMITED_SHARES"], errors="coerce"),
+            "h_share": pd.to_numeric(raw["H_FREE_SHARE"], errors="coerce"),
+            "b_share": pd.to_numeric(raw["B_FREE_SHARE"], errors="coerce"),
+        }
+    )
+    out = out[out["change_date"].notna()]
+    # 东财内部代码（A2xxxx / A0xxxx 等新三板、摘牌主体）不是 A 股代码，保留但标出来
+    out["is_real_code"] = out["symbol"].str.fullmatch(r"\d{6}").astype(int)
+    out = out.drop_duplicates(subset=["symbol", "change_date"], keep="last")
+    out = out.sort_values(["symbol", "change_date"]).reset_index(drop=True)
+    out["source"] = "eastmoney:RPT_F10_EH_EQUITY"
+    out["as_of"] = date.today().isoformat()
+    written = _atomic(out, REF_DIR / "shares")
+
+    universe = load_universe()
+    uni_symbols = set(universe["symbol"])
+    real = out[out["is_real_code"] == 1]
+    in_uni = set(real["symbol"]) & uni_symbols
+    return {
+        "rows": int(len(out)),
+        "symbols": int(out["symbol"].nunique()),
+        "real_symbols": int(real["symbol"].nunique()),
+        "bogus_symbols": int(out.loc[out["is_real_code"] == 0, "symbol"].nunique()),
+        "in_universe": len(in_uni),
+        "universe_missing": len(uni_symbols - set(real["symbol"])),
+        "first": str(out["change_date"].min()),
+        "last": str(out["change_date"].max()),
+        "pages": total_pages,
+        "seconds": round(time.perf_counter() - t0, 1),
+        "as_of": str(out["as_of"].iloc[0]),
+        "written": written,
+    }
+
+
+def load_shares() -> pd.DataFrame:
+    return pd.read_csv(SHARES_CSV, dtype={"symbol": str, "change_date": str, "as_of": str})
+
+
+def shares_at(frame: pd.DataFrame | None = None, day: str | None = None) -> pd.DataFrame:
+    """取 ``<= day`` 的最近一条股本记录（PIT），返回 ``symbol/total_share/float_share``。
+
+    实现用 ``groupby(...).ffill``：先按日期排序再前向填充，等价于“每股取其变动历史中
+    不晚于 day 的最后一条”。缺记录的代码直接缺席（而不是用未来值兜底）。
+    """
+    frame = load_shares() if frame is None else frame
+    day = day or date.today().isoformat()
+    hit = frame[(frame["is_real_code"] == 1) & (frame["change_date"] <= day)]
+    if hit.empty:
+        return pd.DataFrame(columns=["symbol", "total_share", "float_share", "change_date"])
+    hit = hit.sort_values(["symbol", "change_date"])
+    snap = hit.groupby("symbol", as_index=False).last()
+    return snap[["symbol", "total_share", "float_share", "change_date"]]
+
+
+# ---------------------------------------------------------------- 申万快照（sw）
+
+SW_CSV = REF_DIR / "sw_industry.csv"
+SW_INDEX_CSV = REF_DIR / "sw_index.csv"
+
+
+def build_sw_industry(*, pause: float = 0.6, retries: int = 3, verbose: bool = True) -> dict:
+    """申万一级行业与成分股**当前快照**。
+
+    接口 ``index_component_sw`` 没有日期参数（只有当期成分），所以这份文件只能
+    作为「行业分类对照 / 行业市值中性化」的辅助口径，**不能用来做历史行业归属**；
+    历史行业归属仍以 baostock 年度 PIT（``industry.csv``）为准。
+
+    踩坑：``sw_index_first_info`` 的行业代码带 ``.SI`` 后缀（``801010.SI``），
+    直接传给 ``index_component_sw`` 会拿到 0 条成分并触发 akshare 内部 KeyError，
+    必须 ``code.split(".")[0]``。
+    """
+    import akshare as ak
+
+    as_of = date.today().isoformat()
+    first = ak.sw_index_first_info()
+    index_rows = []
+    member_rows: list[dict] = []
+    failed: list[str] = []
+
+    for pos, rec in enumerate(first.itertuples(index=False, name=None), 1):
+        raw_code, name = str(rec[0]), str(rec[1])
+        code = raw_code.split(".")[0]
+        index_rows.append(
+            {
+                "sw_code": code,
+                "sw_name": name,
+                "members_reported": int(rec[2]) if pd.notna(rec[2]) else None,
+                "pe_static": float(rec[3]) if pd.notna(rec[3]) else None,
+                "pe_ttm": float(rec[4]) if pd.notna(rec[4]) else None,
+                "pb": float(rec[5]) if pd.notna(rec[5]) else None,
+                "dividend_yield": float(rec[6]) if pd.notna(rec[6]) else None,
+                "as_of": as_of,
+                "source": "swsresearch:index_publish",
+            }
+        )
+
+        members = None
+        for attempt in range(1, retries + 1):
+            try:
+                got = ak.index_component_sw(symbol=code)
+                if got is not None and len(got):
+                    members = got
+                    break
+            except Exception:  # noqa: BLE001 - 单行业重试后跳过
+                members = None
+            time.sleep(pause * attempt)
+        if members is None or len(members) == 0:
+            failed.append(code)
+            continue
+        for row in members.itertuples(index=False, name=None):
+            member_rows.append(
+                {
+                    "symbol": str(row[1]).zfill(6),
+                    "code_name": str(row[2]),
+                    "sw_code": code,
+                    "sw_name": name,
+                    "sw_level": 1,
+                    "weight": float(row[3]) if pd.notna(row[3]) else None,
+                    "in_date": str(row[4]) if pd.notna(row[4]) else "",
+                    "as_of": as_of,
+                    "source": "swsresearch:index_publish",
+                }
+            )
+        if verbose and pos % 5 == 0:
+            print(f"  申万 {pos}/{len(first)} {code} {name} 累计成分 {len(member_rows)}", flush=True)
+        time.sleep(pause)
+
+    index_frame = pd.DataFrame(index_rows)
+    member_frame = pd.DataFrame(member_rows)
+    written = {}
+    if not index_frame.empty:
+        written["index"] = _atomic(index_frame, REF_DIR / "sw_index")
+    if not member_frame.empty:
+        written["members"] = _atomic(member_frame, REF_DIR / "sw_industry")
+
+    return {
+        "as_of": as_of,
+        "industries": int(len(index_frame)),
+        "members": int(len(member_frame)),
+        "covered_symbols": int(member_frame["symbol"].nunique()) if not member_frame.empty else 0,
+        "failed": failed,
+        "written": written,
+    }
+
+
+def load_sw_industry() -> pd.DataFrame:
+    return pd.read_csv(SW_CSV, dtype={"symbol": str, "sw_code": str, "in_date": str, "as_of": str})
+
+
+def load_sw_index() -> pd.DataFrame:
+    return pd.read_csv(SW_INDEX_CSV, dtype={"sw_code": str, "as_of": str})
