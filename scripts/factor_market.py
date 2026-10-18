@@ -187,7 +187,13 @@ def _load_layer_csv(root: Path, kind: str, limit: int | None = None) -> tuple[di
 
         t1 = time.perf_counter()
         frame = frame.dropna(subset=["date"]).drop_duplicates("date")
-        symbol = str(frame["symbol"].iloc[0]) if "symbol" in frame.columns and len(frame) else path.stem
+        raw_symbol = frame["symbol"].iloc[0] if "symbol" in frame.columns and len(frame) else path.stem
+        # processed CSV 的 symbol 列被 pandas 读成整数（000001 → 1），要补回 6 位，
+        # 否则 --limit 冒烟跑的代码是 "1"/"6"，跟参考数据的裸码对不上（中性化会全 NaN）。
+        if isinstance(raw_symbol, (int, float, np.integer, np.floating)) and np.isfinite(raw_symbol):
+            symbol = f"{int(raw_symbol):06d}"
+        else:
+            symbol = str(raw_symbol)
         frame = frame.drop(columns=[c for c in ("symbol",) if c in frame.columns])
         frame = frame.set_index("date").sort_index()
         frame.index = pd.DatetimeIndex(frame.index, name="date")

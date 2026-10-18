@@ -1,4 +1,4 @@
-﻿"""一键跑全部测试（不需要 pytest）::
+"""一键跑全部测试（不需要 pytest）::
 
     python tests/run_all.py
 
@@ -28,6 +28,7 @@ import test_gateway  # noqa: E402
 import test_guard  # noqa: E402
 import test_indicators  # noqa: E402
 import test_lake  # noqa: E402
+import test_methodology  # noqa: E402
 import test_parquet  # noqa: E402
 import test_refdata  # noqa: E402
 import test_plugins  # noqa: E402
@@ -39,6 +40,7 @@ SUITES = [
     ("回测/风控/报表", test_backtest),
     ("插件/CLI", test_plugins),
     ("多因子", test_factors),
+    ("方法论", test_methodology),
     ("订单护栏/账本", test_guard),
     ("下单通道", test_gateway),
     ("联网行情源", test_web_source),

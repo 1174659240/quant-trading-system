@@ -30,8 +30,9 @@ import pandas as pd
 
 from quant.factors.composite import equal_weights
 from quant.factors.library import compute
+from quant.factors.neutral import codes_from_labels, residualize_many
 from quant.factors.panel import Panel, build_panel
-from quant.factors.preprocess import preprocess
+from quant.factors.preprocess import preprocess, rank_normalize, standardize
 from quant.strategy.base import Strategy
 
 __all__ = ["MultiFactorStrategy"]
@@ -124,6 +125,11 @@ class MultiFactorStrategy(Strategy):
         standardize: bool = True,
         rank: bool = False,
         neutralize_by: str | None = None,
+        industry: pd.DataFrame | None = None,
+        size: pd.DataFrame | None = None,
+        neutralize: str | None = None,
+        select_bucket: int | None = None,
+        select_quantiles: int = 5,
         min_price: float = 2.0,
         min_amount: float = 0.0,
         min_history: int = 120,
@@ -162,6 +168,28 @@ class MultiFactorStrategy(Strategy):
         self.standardize = bool(standardize)
         self.rank = bool(rank)
         self.neutralize_by = neutralize_by or None
+        neutral = (neutralize or "").replace(",", "_").replace("+", "_").replace(" ", "_").strip().lower()
+        if neutral in ("", "none", "off", "0"):
+            neutral = None
+        elif neutral in ("both", "all", "industry_size", "size_industry"):
+            neutral = "industry_size"
+        elif neutral in ("mcap", "marketcap", "市值"):
+            neutral = "size"
+        elif neutral in ("industry", "size"):
+            pass
+        else:
+            raise ValueError("neutralize 只能是 None / industry / size / industry_size")
+        if neutral is not None and industry is None and size is None:
+            raise ValueError("neutralize 需要提供 industry / size 暴露矩阵（见 quant.factors.exposures）")
+        self.neutralize = neutral
+        self.industry = industry
+        self.size = size
+        self.select_bucket = int(select_bucket) if select_bucket else None
+        self.select_quantiles = max(2, int(select_quantiles))
+        if self.select_bucket is not None and not 1 <= self.select_bucket <= self.select_quantiles:
+            raise ValueError(
+                f"select_bucket 必须在 1..{self.select_quantiles} 之间（1=最低分，{self.select_quantiles}=最高分）"
+            )
         self.min_price = float(min_price)
         self.min_amount = float(min_amount)
         self.min_history = int(min_history)
@@ -261,6 +289,10 @@ class MultiFactorStrategy(Strategy):
                     winsorize_n=self.winsorize_n,
                     standardize_=True,
                 )
+        min_count = max(5, min(20, len(panel.symbols) // 2))
+        # 行业 + 市值中性化必须在「所有因子都算完之后」一次性做：FWL 两步法对每个因子
+        # 共用同一份组均值，逐因子调用会重复算 24 遍横截面的行业均值。
+        deferred = self.neutralize is not None
         out: dict[str, pd.DataFrame] = {}
         for name, params in self.factor_specs.items():
             frame = compute(name, panel, **params)
@@ -269,10 +301,38 @@ class MultiFactorStrategy(Strategy):
                 winsorize_method=self.winsorize_method,
                 winsorize_n=self.winsorize_n,
                 exposure=None if name == self.neutralize_by else exposure,
-                standardize_=self.standardize,
-                rank=self.rank,
-                min_count=max(5, min(20, len(panel.symbols) // 2)),
+                standardize_=False if deferred else self.standardize,
+                rank=False if deferred else self.rank,
+                min_count=min_count,
             )
+        if deferred:
+            out = self._neutralize(panel, out, min_count=min_count)
+        return out
+
+    def _neutralize(
+        self, panel: Panel, factors: Mapping[str, pd.DataFrame], *, min_count: int
+    ) -> dict[str, pd.DataFrame]:
+        """对全部因子做一次行业 + 市值中性化，再标准化/分位化。"""
+        dates, symbols = panel.dates, panel.symbols
+        if self.industry is not None:
+            labels = self.industry.reindex(index=dates, columns=symbols)
+            codes = codes_from_labels(labels)
+        else:
+            codes = pd.DataFrame(0, index=dates, columns=symbols, dtype="int32")
+        if self.size is not None:
+            size = self.size.reindex(index=dates, columns=symbols)
+        else:
+            # 只做行业中性化：给一列常数当市值暴露，回归系数为 0，残差等于行业组内去均值
+            size = pd.DataFrame(0.0, index=dates, columns=symbols)
+        residuals = residualize_many(factors, codes=codes, size=size, min_count=min_count)
+        out: dict[str, pd.DataFrame] = {}
+        for name, frame in residuals.items():
+            if self.rank:
+                out[name] = rank_normalize(frame, min_count=min_count)
+            elif self.standardize:
+                out[name] = standardize(frame, min_count=min_count)
+            else:
+                out[name] = frame
         return out
 
     # -- 股票池 -------------------------------------------------------------
@@ -352,12 +412,25 @@ class MultiFactorStrategy(Strategy):
             ok = eligible.loc[day]
             row = scores.loc[day].where(ok).dropna().sort_values(ascending=False)
             ranked = list(row.index)
+            # min_universe 判的是「当天可选股票够不够多」，必须在切分组**之前**判：
+            # 切完组后只剩 20% 的成员，用它跟 min_universe 比会永远空仓（踩过）。
             if len(ranked) < max(self.min_universe, 1):
                 notes.append(f"{day.date()} 合格标的只有 {len(ranked)} 只，本期空仓")
                 pick_log[str(day.date())] = []
                 weight_rows.append((day, {}))
                 held = []
                 continue
+            if self.select_bucket is not None:
+                bucket = self._bucket_members(ranked)
+                if not bucket:
+                    notes.append(
+                        f"{day.date()} 合格标的 {len(ranked)} 只，不足以切 {self.select_quantiles} 组，本期空仓"
+                    )
+                    pick_log[str(day.date())] = []
+                    weight_rows.append((day, {}))
+                    held = []
+                    continue
+                ranked = bucket
             buffer_set = set(ranked[: self.buffer_rank])
             keep = [symbol for symbol in held if symbol in buffer_set]
             need = self.top_k - len(keep)
@@ -377,6 +450,24 @@ class MultiFactorStrategy(Strategy):
             pick_log[str(day.date())] = picks
             weight_rows.append((day, weights))
         return pick_log, weight_rows, notes
+
+    def _bucket_members(self, ranked: Sequence[str]) -> list[str]:
+        """按排名位置等分 ``select_quantiles`` 组，返回 ``select_bucket`` 组的成员。
+
+        约定与 ``evaluate.quantile_returns`` 一致：**1 = 分数最低组，N = 分数最高组**。
+        分组内「越极端越靠前」：最高分组保持降序（先吃分数最高的），最低分组反转为升序
+        （先吃分数最低的）。``top_k`` 再从这一组里取前几只。
+        """
+        count = len(ranked)
+        quantiles = self.select_quantiles
+        if count < quantiles * 2:
+            return []
+        edges = np.linspace(0, count, quantiles + 1).round().astype(int)
+        bucket = int(self.select_bucket)
+        members = list(ranked[int(edges[bucket - 1]): int(edges[bucket])])
+        if bucket * 2 <= quantiles:
+            members = members[::-1]
+        return members
 
     def _weights_for(self, picks: Sequence[str], scores: pd.Series) -> dict[str, float]:
         if not picks:
