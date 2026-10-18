@@ -136,8 +136,11 @@ def main(argv=None) -> int:
     print(f"== 读取 {args.kind} 层 ==", flush=True)
     frames, stats = load_layer(Path(args.lake), args.kind, args.limit or None)
     from quant.factors import fundamental
+    from quant.factors import style  # noqa: F401  注册 18 个风格/容量因子
+    from quant.factors import events as event_factors  # noqa: F401
 
     fundamental.register()
+    event_factors.register()
     dead = load_delisted_bars(Path(args.lake))
     added = [symbol for symbol in dead if symbol not in frames]
     frames.update({symbol: dead[symbol] for symbol in added})

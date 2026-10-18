@@ -270,17 +270,26 @@ def _growth(wide: pd.DataFrame, dates: pd.DatetimeIndex, symbols: list[str]) -> 
     return _scatter_ffill(growth, dates, symbols)
 
 
-@lru_cache(maxsize=8)
-def _valuation_field(field_name: str) -> pd.DataFrame:
-    """估值字段的「交易日 × 代码」矩阵（原始 per-symbol parquet 拼装，按字段缓存）。"""
+@lru_cache(maxsize=16)
+def _valuation_field(field_name: str, include_holdout: bool = False) -> pd.DataFrame:
+    """估值字段的「交易日 × 代码」矩阵（原始 per-symbol parquet 拼装，按字段缓存）。
+
+    ``include_holdout=True`` 时把 ``D:/quant-data/holdout/valuation`` 一起读进来（默认不读）。
+    """
     from quant import valuation as vd
 
+    roots = [vd.VALUATION_DIR] + ([vd.HOLDOUT_DIR] if include_holdout else [])
     series_map: dict[str, pd.Series] = {}
-    for path in sorted(vd.VALUATION_DIR.glob("??????.parquet")):
-        one = pd.read_parquet(path, columns=["date", field_name])
-        if len(one) == 0:
-            continue
-        series_map[path.stem] = pd.Series(one[field_name].to_numpy(), index=pd.to_datetime(one["date"]))
+    for root in roots:
+        for path in sorted(root.glob("??????.parquet")):
+            one = pd.read_parquet(path, columns=["date", field_name])
+            if len(one) == 0:
+                continue
+            series = pd.Series(one[field_name].to_numpy(), index=pd.to_datetime(one["date"]))
+            if path.stem in series_map:
+                series = pd.concat([series_map[path.stem], series]).sort_index()
+                series = series[~series.index.duplicated(keep="last")]
+            series_map[path.stem] = series
     if not series_map:
         return pd.DataFrame(dtype="float32")
     wide = pd.DataFrame(series_map).sort_index()
@@ -289,7 +298,8 @@ def _valuation_field(field_name: str) -> pd.DataFrame:
 
 
 def _valuation_wide(field_name: str, dates: pd.DatetimeIndex, symbols: list[str]) -> pd.DataFrame:
-    wide = _valuation_field(field_name)
+    holdout = len(dates) > 0 and pd.Timestamp(dates[-1]) > pd.Timestamp("2024-12-31")
+    wide = _valuation_field(field_name, holdout)
     if wide.empty:
         return pd.DataFrame(index=dates, columns=symbols, dtype="float32")
     return wide.reindex(index=dates, columns=symbols).ffill()

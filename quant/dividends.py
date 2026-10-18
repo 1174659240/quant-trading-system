@@ -19,6 +19,7 @@ import requests
 
 REF_DIR = Path("D:/quant-data/ref")
 DIVIDENDS = REF_DIR / "dividends.parquet"
+HOLDOUT_DIVIDENDS = Path("D:/quant-data/holdout/dividends.parquet")
 META = REF_DIR / "dividends_meta.json"
 URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/yjfp/"}
@@ -66,7 +67,7 @@ def _page(report_date: str, page: int, *, retries: int = 4, timeout: float = 30.
     return {"rows": [], "pages": 0, "count": 0, "error": last}
 
 
-def clean(rows: list[dict]) -> pd.DataFrame:
+def clean(rows: list[dict], *, allow_holdout: bool = False) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     frame = pd.DataFrame(rows)
@@ -94,8 +95,19 @@ def clean(rows: list[dict]) -> pd.DataFrame:
     frame["bonus_ratio"] = pd.to_numeric(frame["bonus_ratio"], errors="coerce")
     frame["total_shares"] = pd.to_numeric(frame["total_shares"], errors="coerce")
     frame["div_ratio"] = pd.to_numeric(frame["div_ratio"], errors="coerce")
-    frame = frame[frame["report_date"] < HOLDOUT_START]  # holdout 锁：不读 2025 起的报告期
+    if not allow_holdout:
+        frame = frame[frame["report_date"] < HOLDOUT_START]  # holdout 锁：默认不读 2025 起的报告期
     return frame.drop_duplicates(["symbol", "report_date", "ex_date", "cash_per_share"], keep="last")
+
+
+def fetch_period(report_date: str, *, allow_holdout: bool = True, pause: float = 0.05) -> pd.DataFrame:
+    """只抓单个报告期（holdout 用），返回清洗后的明细，不落盘。"""
+    first = _page(report_date, 1)
+    rows = first["rows"]
+    for page in range(2, first["pages"] + 1):
+        rows += _page(report_date, page)["rows"]
+        time.sleep(pause)
+    return clean(rows, allow_holdout=allow_holdout)
 
 
 def fetch(start: str = "2013-12-31", end: str = "2024-12-31", *, pause: float = 0.05, resume: bool = True) -> dict:
@@ -149,8 +161,64 @@ def fetch(start: str = "2013-12-31", end: str = "2024-12-31", *, pause: float = 
     return meta
 
 
-def load() -> pd.DataFrame:
-    """读分红明细；``ex_date`` 晚于 2024-12-31 的记录一并裁掉（holdout 锁）。"""
+def fetch_holdout(start: str = "2025-03-31", end: str = "2026-09-30", *, pause: float = 0.05) -> dict:
+    """抓 holdout 报告期分红，落 ``D:/quant-data/holdout/dividends.parquet``（不改样本内文件）。"""
+    wanted = periods(start, end)
+    existing = pd.read_parquet(HOLDOUT_DIVIDENDS) if HOLDOUT_DIVIDENDS.is_file() else pd.DataFrame()
+    have = set(existing["report_date"].dt.strftime("%Y-%m-%d")) if len(existing) else set()
+    frames = [existing] if len(existing) else []
+    log: list[dict] = []
+    for report_date in wanted:
+        if report_date in have:
+            continue
+        frame = fetch_period(report_date, allow_holdout=True, pause=pause)
+        frames.append(frame)
+        log.append({"report_date": report_date, "rows": int(len(frame))})
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if len(out):
+        out = out.sort_values(["symbol", "ex_date", "report_date"]).reset_index(drop=True)
+        HOLDOUT_DIVIDENDS.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HOLDOUT_DIVIDENDS.with_suffix(".tmp.parquet")
+        out.to_parquet(tmp, index=False)
+        tmp.replace(HOLDOUT_DIVIDENDS)
+    meta = {
+        "rows": int(len(out)),
+        "symbols": int(out["symbol"].nunique()) if len(out) else 0,
+        "periods": sorted(out["report_date"].dt.strftime("%Y-%m-%d").unique().tolist()) if len(out) else [],
+        "log": log,
+        "source": "eastmoney RPT_SHAREBONUS_DET",
+        "note": "holdout 层：2025-01-01 起，只用于最终一次性验收",
+    }
+    (HOLDOUT_DIVIDENDS.parent / "dividends_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+def load(include_holdout: bool = False) -> pd.DataFrame:
+    """读分红明细；默认把 ``ex_date`` 晚于 2024-12-31 的记录一并裁掉（holdout 锁）。
+
+    ``include_holdout=True`` 时并上 ``holdout/dividends.parquet``（仅最终验收用）。
+    """
+    frames = []
+    if DIVIDENDS.is_file():
+        frames.append(pd.read_parquet(DIVIDENDS))
+    if include_holdout and HOLDOUT_DIVIDENDS.is_file():
+        frames.append(pd.read_parquet(HOLDOUT_DIVIDENDS))
+    if not frames:
+        return pd.DataFrame()
+    frame = pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["symbol", "report_date", "ex_date", "cash_per_share"], keep="last"
+    )
+    for column in ("report_date", "plan_notice", "notice_date", "record_date", "ex_date"):
+        frame[column] = pd.to_datetime(frame[column], errors="coerce")
+    frame["symbol"] = frame["symbol"].astype(str).str.zfill(6)
+    if not include_holdout:
+        cutoff = HOLDOUT_START - pd.Timedelta(days=1)
+        frame = frame[frame["ex_date"].isna() | (frame["ex_date"] <= cutoff)]
+    return frame.reset_index(drop=True)
+
+
+def _load_legacy() -> pd.DataFrame:
+    """旧实现（保留以兼容调用方）：读分红明细并按 holdout 截断。"""
     frame = pd.read_parquet(DIVIDENDS)
     for column in ("report_date", "plan_notice", "notice_date", "record_date", "ex_date"):
         frame[column] = pd.to_datetime(frame[column], errors="coerce")
@@ -169,7 +237,8 @@ def dps_panel(dates: pd.DatetimeIndex, symbols, *, window_days: int = 365) -> pd
     dates = pd.DatetimeIndex(sorted(pd.DatetimeIndex(dates)))
     symbols = [str(symbol).zfill(6) for symbol in symbols]
     empty = pd.DataFrame(0.0, index=dates, columns=symbols)
-    frame = load()
+    holdout = len(dates) > 0 and pd.Timestamp(dates[-1]) > HOLDOUT_START
+    frame = load(include_holdout=holdout)
     frame = frame[frame["ex_date"].notna() & (frame["cash_per_share"] > 0)]
     frame = frame[(frame["ex_date"] >= dates.min() - pd.Timedelta(days=window_days)) & (frame["ex_date"] <= dates.max())]
     frame = frame[frame["symbol"].isin(symbols)]
@@ -185,7 +254,7 @@ def dps_panel(dates: pd.DatetimeIndex, symbols, *, window_days: int = 365) -> pd
 def coverage(dates: pd.DatetimeIndex, symbols) -> dict:
     """分红事件覆盖率：池内多少标的在窗口内至少有 1 次已实施现金分红。"""
     wanted = {str(symbol).zfill(6) for symbol in symbols}
-    frame = load()
+    frame = load(include_holdout=pd.Timestamp(dates[-1]) > HOLDOUT_START)
     frame = frame[frame["ex_date"].notna() & (frame["ex_date"] >= pd.Timestamp(dates.min())) & (frame["ex_date"] <= pd.Timestamp(dates.max()))]
     frame = frame[frame["symbol"].isin(wanted)]
     pairs = frame.drop_duplicates("symbol")

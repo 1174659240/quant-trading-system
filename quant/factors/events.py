@@ -35,12 +35,17 @@ def _panel_key(panel: Panel, tag: str) -> tuple:
             str(panel.symbols[0]), str(panel.symbols[-1]), len(panel.symbols))
 
 
+def _holdout(panel: Panel) -> bool:
+    """面板末日超过 2024-12-31 → 读 holdout 事件（只在最终验收里发生）。"""
+    return len(panel.dates) > 0 and pd.Timestamp(panel.dates[-1]) > events.CUTOFF
+
+
 def _event_matrix(panel: Panel, name: str, value: str, *, prepare=None, tag: str = "") -> pd.DataFrame:
     """事件 → 日频矩阵：``available_date`` 对齐到第一个 >= 该日的面板交易日。"""
-    key = _panel_key(panel, f"{name}:{value}:{tag}")
+    key = _panel_key(panel, f"{name}:{value}:{tag}:{_holdout(panel)}")
     if key in _MATRIX_CACHE:
         return _MATRIX_CACHE[key]
-    frame = events.load(name)
+    frame = events.load(name, allow_holdout=_holdout(panel))
     if prepare is not None:
         frame = prepare(frame)
     arr = np.zeros((len(panel.dates), len(panel.symbols)), dtype="float64")
@@ -111,11 +116,11 @@ def lhb_inst_net(panel: Panel, *, window: int = 20) -> pd.DataFrame:
 
 
 def lhb_flag(panel: Panel, *, window: int = 5) -> pd.DataFrame:
-    return _rolling_any(_ones_matrix(panel, events.load("lhb"), "lhb"), window)
+    return _rolling_any(_ones_matrix(panel, events.load("lhb", allow_holdout=_holdout(panel)), "lhb"), window)
 
 
 def buyback_flag(panel: Panel, *, window: int = 60) -> pd.DataFrame:
-    return _rolling_any(_ones_matrix(panel, events.load("repurchase"), "repurchase"), window)
+    return _rolling_any(_ones_matrix(panel, events.load("repurchase", allow_holdout=_holdout(panel)), "repurchase"), window)
 
 
 def buyback_ratio(panel: Panel, *, window: int = 60) -> pd.DataFrame:
@@ -146,19 +151,19 @@ def insider_buy(panel: Panel, *, window: int = 20) -> pd.DataFrame:
 
 
 def st_unflag(panel: Panel, *, window: int = 20) -> pd.DataFrame:
-    left = events.load("st")
+    left = events.load("st", allow_holdout=_holdout(panel))
     left = left[left["direction"] == "摘帽"]
     return _rolling_any(_ones_matrix(panel, left, "st_unflag"), window)
 
 
 def st_flag(panel: Panel, *, window: int = 20) -> pd.DataFrame:
-    became = events.load("st")
+    became = events.load("st", allow_holdout=_holdout(panel))
     became = became[became["direction"] == "戴帽"]
     return _rolling_any(_ones_matrix(panel, became, "st_flag"), window)
 
 
 def high_transfer(panel: Panel, *, window: int = 60) -> pd.DataFrame:
-    frame = events.load("fhps")
+    frame = events.load("fhps", allow_holdout=_holdout(panel))
     picked = frame[frame["is_high_transfer"] > 0]
     return _rolling_any(_ones_matrix(panel, picked, "high_transfer"), window)
 

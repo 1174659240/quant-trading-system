@@ -862,6 +862,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--symbols", default=None, help="逗号分隔，缺省用 universe 全表")
         parser.add_argument("--force", action="store_true", help="已落盘的也重抓")
         parser.add_argument("--shard", default=None, help="i/n：只处理第 i 片（0 起），用于多进程并行")
+        parser.add_argument("--holdout", action="store_true", help="写到 holdout 目录（2025 起），不覆盖样本内文件")
     if action == "fund":
         parser.add_argument("--tables", default="profit,balance,cashflow")
         parser.add_argument("--start", default="2013-03-31")
@@ -873,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--start", default="2013-12-31")
         parser.add_argument("--end", default="2024-12-31")
         parser.add_argument("--force", action="store_true")
+        parser.add_argument("--holdout", action="store_true", help="抓 2025 起报告期，落 holdout/dividends.parquet")
     if action == "turnpanel":
         parser.add_argument("--cutoff", default="2024-12-31")
         parser.add_argument("--start", default="2014-01-01")
@@ -1000,6 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
             pause=args.pause,
             resume=not args.force,
             shard=None if not args.shard else tuple(int(x) for x in args.shard.split("/")),
+            root=valuation.HOLDOUT_DIR if getattr(args, "holdout", False) else None,
         )
         print(
             f"\n估值快照：写入 {summary['written']} 只 / {summary['rows']} 行，"
@@ -1054,10 +1057,14 @@ def main(argv: list[str] | None = None) -> int:
     elif action == "dividends":
         from . import dividends
 
-        summary = dividends.fetch(args.start, args.end, resume=not args.force)
+        if getattr(args, "holdout", False):
+            summary = dividends.fetch_holdout(args.start, args.end)
+        else:
+            summary = dividends.fetch(args.start, args.end, resume=not args.force)
         data = {k: v for k, v in summary.items() if k != "log"}
+        target = dividends.HOLDOUT_DIVIDENDS if getattr(args, "holdout", False) else dividends.DIVIDENDS
         print(
-            f"\n分红明细：{data['periods']} 期 / {data['rows']} 行 / {data['symbols']} 只 → {dividends.DIVIDENDS}"
+            f"\n分红明细：{data['periods']} 期 / {data['rows']} 行 / {data['symbols']} 只 → {target}"
         )
     elif action == "turnpanel":
         from . import valuation

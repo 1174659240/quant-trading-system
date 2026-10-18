@@ -25,19 +25,23 @@ import pandas as pd
 from .refdata import REF_DIR, bs_frame, ensure_bs, load_universe
 
 VALUATION_DIR = Path("D:/quant-data/valuation")
+#: holdout（2025-01-01 起）单独一层：不覆盖样本内文件、不改其 sha，读取需显式 ``root=HOLDOUT_DIR``
+HOLDOUT_DIR = Path("D:/quant-data/holdout/valuation")
 FIELDS = "date,code,close,preclose,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST"
 NUMERIC = ("close", "preclose", "turn", "pctChg", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM")
 FLAGS = ("tradestatus", "isST")
 DEFAULT_START = "2014-01-01"
 
 
-def path_for(symbol: str) -> Path:
-    return VALUATION_DIR / f"{str(symbol).zfill(6)}.parquet"
+def path_for(symbol: str, *, root: Path | None = None) -> Path:
+    base = Path(root) if root is not None else VALUATION_DIR
+    return base / f"{str(symbol).zfill(6)}.parquet"
 
 
-def _append_log(record: dict, *, suffix: str = "") -> None:
-    VALUATION_DIR.mkdir(parents=True, exist_ok=True)
-    path = VALUATION_DIR / f"fetch_log{suffix}.jsonl"
+def _append_log(record: dict, *, suffix: str = "", root: Path | None = None) -> None:
+    base = Path(root) if root is not None else VALUATION_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / f"fetch_log{suffix}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -111,26 +115,29 @@ def build(
     every: int = 50,
     verbose: bool = True,
     shard: tuple[int, int] | None = None,
+    root: Path | None = None,
 ) -> dict:
     """批量落估值序列。文件已存在即跳过（resume），失败进 failures.json。
 
     ``shard=(i, n)`` 表示只处理第 i 片（0 起），用于多进程并行：每片写自己的日志，
     文件级 resume 保证分片之间不会重复抓同一只。
+    ``root`` 指定落盘目录（holdout 用 ``HOLDOUT_DIR``，不覆盖样本内文件）。
     """
     if symbols is None:
         uni = load_universe()
         symbols = uni["symbol"].astype(str).tolist()
     symbols = [str(s).zfill(6) for s in symbols]
+    base = Path(root) if root is not None else VALUATION_DIR
     if shard is not None:
         i, n = shard
         if not 0 <= i < n:
             raise ValueError(f"分片越界：{shard}")
         symbols = [s for pos, s in enumerate(symbols) if pos % n == i]
-    todo = [s for s in symbols if not (resume and path_for(s).exists())]
+    todo = [s for s in symbols if not (resume and path_for(s, root=base).exists())]
     if limit:
         todo = todo[:limit]
 
-    VALUATION_DIR.mkdir(parents=True, exist_ok=True)
+    base.mkdir(parents=True, exist_ok=True)
     log_suffix = "" if shard is None else f".w{shard[0]}"
     st = ensure_bs()
     if not st["ok"]:
@@ -152,7 +159,7 @@ def build(
             empty.append(symbol)
             skipped += 1
             continue
-        path = path_for(symbol)
+        path = path_for(symbol, root=base)
         tmp = path.with_suffix(".parquet.tmp")
         frame.to_parquet(tmp, index=False)
         tmp.replace(path)
@@ -169,8 +176,10 @@ def build(
                 "seconds": round(time.perf_counter() - t0, 3),
                 "bytes": path.stat().st_size,
                 "fields": FIELDS,
+                "root": str(base),
             },
             suffix=log_suffix,
+            root=base,
         )
         if verbose and idx % every == 0:
             elapsed = time.perf_counter() - t_all
@@ -195,23 +204,24 @@ def build(
         "empty_sample": empty[:20],
         "failures": failures,
         "seconds": round(time.perf_counter() - t_all, 1),
-        "dir": str(VALUATION_DIR),
+        "dir": str(base),
         "shard": None if shard is None else {"index": shard[0], "total": shard[1]},
     }
-    (VALUATION_DIR / f"failures{log_suffix}.json").write_text(
+    (base / f"failures{log_suffix}.json").write_text(
         json.dumps({"failures": failures, "empty": empty}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return summary
 
 
-def st_matrix(symbols: Sequence[str] | None = None) -> pd.DataFrame:
+def st_matrix(symbols: Sequence[str] | None = None, *, root: Path | None = None) -> pd.DataFrame:
     """``isST`` 布尔矩阵（index=交易日，columns=6 位代码，True=当日 ST）。
 
     只读一列，不加载价量，所以比 :func:`load` 快；缺失日保持 NaN（转 bool 为 False）。
     """
     wanted = None if symbols is None else {str(s).zfill(6) for s in symbols}
     series: dict[str, pd.Series] = {}
-    for path in sorted(VALUATION_DIR.glob("??????.parquet")):
+    base = Path(root) if root is not None else VALUATION_DIR
+    for path in sorted(base.glob("??????.parquet")):
         if wanted is not None and path.stem not in wanted:
             continue
         one = pd.read_parquet(path, columns=["date", "isST"])
@@ -231,6 +241,7 @@ def build_turn_panel(
     *,
     start: str = "2014-01-01",
     cutoff: str = "2024-12-31",
+    root: Path | None = None,
 ) -> dict:
     """把逐股 ``turn`` 列透视成「交易日 × 代码」宽表并落盘（任务一/二的换手族因子用）。
 
@@ -238,10 +249,11 @@ def build_turn_panel(
     ``cutoff`` 默认 2024-12-31：holdout（2025 起）不进入任何因子面板。
     """
     target = Path(out) if out is not None else REF_DIR / "turn_panel.parquet"
-    files = sorted(VALUATION_DIR.glob("??????.parquet"))
+    base = Path(root) if root is not None else VALUATION_DIR
+    files = sorted(base.glob("??????.parquet"))
     frames = [pd.read_parquet(path, columns=["date", "symbol", "turn"]) for path in files]
     if not frames:
-        raise RuntimeError(f"{VALUATION_DIR} 下没有估值文件，先跑 `python -m quant lake valuation`")
+        raise RuntimeError(f"{base} 下没有估值文件，先跑 `python -m quant lake valuation`")
     raw = pd.concat(frames, ignore_index=True)
     raw["date"] = pd.to_datetime(raw["date"])
     raw = raw[(raw["date"] >= pd.Timestamp(start)) & (raw["date"] <= pd.Timestamp(cutoff))]
@@ -265,11 +277,12 @@ def build_turn_panel(
     }
 
 
-def load(symbols: Sequence[str] | None = None) -> pd.DataFrame:
+def load(symbols: Sequence[str] | None = None, *, root: Path | None = None) -> pd.DataFrame:
     """读取估值面板（按 symbol 过滤）；只读已落盘文件。"""
     wanted = None if symbols is None else {str(s).zfill(6) for s in symbols}
+    base = Path(root) if root is not None else VALUATION_DIR
     frames = []
-    for path in sorted(VALUATION_DIR.glob("??????.parquet")):
+    for path in sorted(base.glob("??????.parquet")):
         if wanted is not None and path.stem not in wanted:
             continue
         frames.append(pd.read_parquet(path))

@@ -24,11 +24,13 @@ import pandas as pd
 
 EVENTS_DIR = Path("D:/quant-data/events")
 META = EVENTS_DIR / "events_meta.json"
+HOLDOUT_DIR = Path("D:/quant-data/holdout/events")
 HOLDOUT_START = pd.Timestamp("2025-01-01")
 CUTOFF = pd.Timestamp("2024-12-31")
 START = pd.Timestamp("2014-01-01")
 
 TABLES = ("lhb", "lhb_inst", "repurchase", "hold", "st", "fhps")
+HOLDOUT_FILES = {name: HOLDOUT_DIR / f"{name}.parquet" for name in TABLES}
 FILES = {name: EVENTS_DIR / f"{name}.parquet" for name in TABLES}
 
 # 龙虎榜上榜原因归类（用于「方向/强度」分组，规则可复现）
@@ -369,17 +371,25 @@ def fetch_hold(*, pause: float = 0.0) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_st(*, start: str = "2014-01-01") -> dict:
+def build_st(*, start: str = "2014-01-01", include_holdout: bool = False) -> dict:
     """从 ``valuation.st_matrix()`` 的逐日 isST 推导戴帽/摘帽日。
 
-    只读 ``<= 2024-12-31`` 的日期（holdout 锁）；翻转日收盘后可见，故
-    ``available_date = event_date``。
+    默认只读 ``<= 2024-12-31``（holdout 锁）；``include_holdout=True`` 时把
+    ``holdout/valuation`` 一起读进来，翻转事件写 ``holdout/events/st.parquet``（不改样本内文件）。
+    翻转日收盘后可见，故 ``available_date = event_date``。
     """
     from quant import valuation
 
-    matrix = valuation.st_matrix()
-    matrix = matrix.loc[(matrix.index >= pd.Timestamp(start)) & (matrix.index <= CUTOFF)]
-    matrix = matrix.sort_index()
+    if include_holdout:
+        base = valuation.st_matrix()
+        extra = valuation.st_matrix(root=valuation.HOLDOUT_DIR)
+        both = base.combine_first(extra)
+        matrix = both.loc[both.index >= pd.Timestamp(start)].sort_index()
+        matrix = matrix.fillna(False).astype(bool)
+    else:
+        matrix = valuation.st_matrix()
+        matrix = matrix.loc[(matrix.index >= pd.Timestamp(start)) & (matrix.index <= CUTOFF)]
+        matrix = matrix.sort_index()
     # 注意：bool 列 shift 后变成 object，``~False`` 是 -1（真值），
     # 必须先 fillna 再 astype(bool)，否则「每天都是翻转日」。
     prev = matrix.shift(1).fillna(False).astype(bool)
@@ -400,7 +410,16 @@ def build_st(*, start: str = "2014-01-01") -> dict:
     frame["available_date"] = frame["event_date"]
     frame = frame.sort_values(["event_date", "symbol"]).reset_index(drop=True)
     frame["is_st"] = frame["direction"].eq("戴帽").astype(int)
-    info = _write("st", frame)
+    if include_holdout:
+        frame = frame[frame["available_date"] >= HOLDOUT_START].reset_index(drop=True)
+        HOLDOUT_DIR.mkdir(parents=True, exist_ok=True)
+        target = HOLDOUT_FILES["st"]
+        tmp = target.with_suffix(".tmp.parquet")
+        frame.to_parquet(tmp, index=False)
+        tmp.replace(target)
+        info = {"path": str(target), "rows": int(len(frame))}
+    else:
+        info = _write("st", frame)
     info.update({
         "rows": int(len(frame)),
         "symbols": int(frame["symbol"].nunique()),
@@ -502,11 +521,14 @@ def fetch_fhps(*, start: str = "2013-12-31", pause: float = 0.05, resume: bool =
 # ---------------------------------------------------------------------------
 
 
-def load(name: str, *, allow_holdout: bool = False, start: str | None = None) -> pd.DataFrame:
+def load(name: str, *, allow_holdout: bool = False, start: str | None = None) -> pd.DataFrame:  # noqa: D401
     """读事件表；默认裁到 2024-12-31，``allow_holdout=True`` 才返回 2025 起的数据。"""
     if name not in FILES:
         raise KeyError(f"未知事件表：{name}（可选 {TABLES}）")
     frame = pd.read_parquet(FILES[name])
+    if allow_holdout and HOLDOUT_FILES[name].is_file():
+        extra = pd.read_parquet(HOLDOUT_FILES[name])
+        frame = pd.concat([frame, extra], ignore_index=True).drop_duplicates()
     for column in ("event_date", "available_date"):
         if column in frame:
             frame[column] = pd.to_datetime(frame[column], errors="coerce")

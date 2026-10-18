@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -62,14 +63,24 @@ def _key(dates: pd.Index, symbols: pd.Index) -> tuple:
 
 
 def turn_panel(dates: pd.Index, symbols: pd.Index) -> pd.DataFrame:
-    """换手率宽表（%），按 ``(日期, 代码)`` 对齐；缺失为 NaN。"""
+    """换手率宽表（%），按 ``(日期, 代码)`` 对齐；缺失为 NaN。
+
+    面板末日超过 2024-12-31 时自动并上 ``D:/quant-data/holdout/turn_panel.parquet``（holdout 层）。
+    """
     key = "turn|" + "|".join(map(str, _key(dates, symbols)))
     hit = _CACHE.get(key)
     if isinstance(hit, pd.DataFrame):
         return hit
     frame = pd.read_parquet(TURN_FILE)
+    if len(dates) and pd.Timestamp(dates[-1]) > HOLDOUT_START:
+        holdout_file = Path("D:/quant-data/holdout/turn_panel.parquet")
+        if holdout_file.is_file():
+            extra = pd.read_parquet(holdout_file)
+            frame = pd.concat([frame, extra], ignore_index=True)
+            frame = frame.drop_duplicates(subset=["date"], keep="last")
     frame["date"] = pd.to_datetime(frame["date"])
-    frame = frame[frame["date"] <= HOLDOUT_START - pd.Timedelta(days=1)]
+    if not (len(dates) and pd.Timestamp(dates[-1]) > HOLDOUT_START):
+        frame = frame[frame["date"] <= HOLDOUT_START - pd.Timedelta(days=1)]
     frame = frame.set_index("date")
     frame = frame.reindex(index=dates, columns=[str(column) for column in symbols])
     frame = frame.apply(pd.to_numeric, errors="coerce").astype("float32")

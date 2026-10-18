@@ -856,6 +856,48 @@ def check_refdata(report: DoctorReport) -> None:
         report.add(group, "退市股日线", WARN, "缺 delisted/events.csv", "python -m quant lake delisted")
 
     _check_events(report, group)
+    _check_holdout(report, group)
+
+
+def _check_holdout(report: DoctorReport, group: str) -> None:
+    """holdout 层（2025-01-01 起）：只统计存在性与行数，不读内容、不参与任何样本内计算。"""
+    try:
+        import pandas as pd
+
+        from quant import dividends, events as ev, valuation
+    except Exception as exc:  # noqa: BLE001
+        report.add(group, "holdout 层", WARN, f"导入失败：{exc}")
+        return
+    root = Path("D:/quant-data/holdout")
+    try:
+        parts = []
+        prices = sorted((root / "parquet").glob("**/*.parquet"))
+        if prices:
+            # 只读 footer，避免把 200 万行读进内存
+            import pyarrow.parquet as pq
+
+            rows = sum(pq.ParquetFile(path).metadata.num_rows for path in prices)
+            parts.append(f"价量 {len(prices)} 分区/{rows:,} 行")
+        files = sorted(valuation.HOLDOUT_DIR.glob("??????.parquet"))
+        if files:
+            rows = sum(pq.ParquetFile(path).metadata.num_rows for path in files)
+            parts.append(f"估值 {len(files):,} 只/{rows:,} 行")
+        if (root / "turn_panel.parquet").is_file():
+            parts.append(f"换手 {pq.ParquetFile(root / 'turn_panel.parquet').metadata.num_rows:,} 行")
+        if dividends.HOLDOUT_DIVIDENDS.is_file():
+            parts.append(f"分红 {pq.ParquetFile(dividends.HOLDOUT_DIVIDENDS).metadata.num_rows:,} 行")
+        if (ev.HOLDOUT_DIR / "st.parquet").is_file():
+            parts.append(f"ST 翻转 {pq.ParquetFile(ev.HOLDOUT_DIR / 'st.parquet').metadata.num_rows:,} 行")
+        if not parts:
+            report.add(group, "holdout 层", WARN, "未落盘（最终验收前需补齐）", "python -m quant lake valuation --holdout --shard 0/4")
+            return
+        detail = "、".join(parts) + "；仅最终一次性验收读取"
+        if len(files) < 5000:
+            report.add(group, "holdout 层", WARN, f"{detail}（估值不足 5,000 只，验收前需续跑）")
+        else:
+            report.add(group, "holdout 层", OK, detail)
+    except Exception as exc:  # noqa: BLE001
+        report.add(group, "holdout 层", WARN, f"读取失败：{exc}")
 
 
 def _check_events(report: DoctorReport, group: str) -> None:

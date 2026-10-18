@@ -56,7 +56,7 @@ def _layer(name: str, payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return {"layer": name, **payload, **extra}
 
 
-def collect() -> dict[str, Any]:
+def collect(include_holdout: bool = False) -> dict[str, Any]:
     layers: list[dict[str, Any]] = []
 
     # 0. 爬取层（原始代码表 + 逐股 CSV + 年度 parquet）
@@ -307,7 +307,7 @@ def collect() -> dict[str, Any]:
         "files": int(sum(item.get("files", 0) for item in counted)),
         "excluded": ["mainfin（indicator 的投影，避免重复计数）"],
     }
-    return {
+    payload = {
         "frozen_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(timespec="seconds"),
         "manifest": {
             "path": str(manifest),
@@ -316,14 +316,78 @@ def collect() -> dict[str, Any]:
         "totals": totals,
         "layers": layers,
     }
+    if include_holdout:
+        payload["holdout"] = collect_holdout()
+    return payload
+
+
+def collect_holdout() -> dict[str, Any]:
+    """holdout 层（2025-01-01 起）单独统计：**不进入样本内 totals / 冻结指纹**。"""
+    from quant import dividends, events, valuation
+
+    blocks: dict[str, Any] = {}
+    root = Path("D:/quant-data/holdout")
+    blocks["prices"] = _layer(
+        "holdout_prices",
+        {
+            **_dir_stats(root / "parquet", "**/*.parquet"),
+            "rows": _parquet_rows(root / "parquet", "**/*.parquet"),
+        },
+        path=str(root / "parquet"),
+        source="baostock 前复权，2025-01-02 起",
+        pit="按交易日",
+    )
+    blocks["valuation"] = _layer(
+        "holdout_valuation",
+        {
+            **_dir_stats(valuation.HOLDOUT_DIR, "*.parquet"),
+            "rows": _parquet_rows(valuation.HOLDOUT_DIR),
+        },
+        path=str(valuation.HOLDOUT_DIR),
+        source="baostock 日频估值序列",
+        pit="按交易日",
+    )
+    turn = root / "turn_panel.parquet"
+    blocks["turn_panel"] = _layer(
+        "holdout_turn_panel",
+        {"files": 1 if turn.is_file() else 0, "rows": _parquet_rows(root, "turn_panel.parquet") if turn.is_file() else 0},
+        path=str(turn),
+        source="valuation.turn 透视",
+        pit="按交易日",
+    )
+    div = dividends.HOLDOUT_DIVIDENDS
+    blocks["dividends"] = _layer(
+        "holdout_dividends",
+        {"files": 1 if div.is_file() else 0, "rows": _parquet_rows(root, "dividends.parquet") if div.is_file() else 0},
+        path=str(div),
+        source="eastmoney RPT_SHAREBONUS_DET，报告期 2025-03-31 起",
+        pit="ex_date 生效",
+    )
+    blocks["events"] = _layer(
+        "holdout_events",
+        {
+            **_dir_stats(events.HOLDOUT_DIR, "*.parquet"),
+            "rows": _parquet_rows(events.HOLDOUT_DIR),
+        },
+        path=str(events.HOLDOUT_DIR),
+        source="ST 翻转（holdout 估值层推导）+ 事件表 2025+ 行",
+        pit="available_date",
+    )
+    return {
+        "root": str(root),
+        "note": "故意不计入 totals：样本内冻结指纹必须保持不变",
+        "layers": list(blocks.values()),
+        "rows": int(sum(item.get("rows", 0) for item in blocks.values())),
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="数据层冻结指纹")
     parser.add_argument("--out", default=str(OUT_DEFAULT))
+    parser.add_argument("--include-holdout", action="store_true", help="附带 holdout 层统计（不计入样本内 totals）")
     args = parser.parse_args()
 
-    payload = collect()
+    payload = collect(include_holdout=args.include_holdout)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -334,6 +398,10 @@ def main() -> int:
             f"  {item['layer']:<24} files={item.get('files', 0):>6} rows={item.get('rows', 0):>9}"
         )
     print(f"合计 rows={payload['totals']['rows']}")
+    if "holdout" in payload:
+        print(f"holdout rows={payload['holdout']['rows']}（不计入合计）")
+        for item in payload["holdout"]["layers"]:
+            print(f"  {item['layer']:<24} files={item.get('files', 0):>6} rows={item.get('rows', 0):>9}")
     return 0
 
 
