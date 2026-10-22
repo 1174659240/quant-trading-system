@@ -26,6 +26,8 @@ import test_data  # noqa: E402
 import test_events  # noqa: E402
 import test_factors  # noqa: E402
 import test_gateway  # noqa: E402
+import test_growth  # noqa: E402
+import test_growth_backtest  # noqa: E402
 import test_guard  # noqa: E402
 import test_holdout  # noqa: E402
 import test_indicators  # noqa: E402
@@ -43,6 +45,8 @@ SUITES = [
     ("回测/风控/报表", test_backtest),
     ("插件/CLI", test_plugins),
     ("多因子", test_factors),
+    ("成长因子", test_growth),
+    ("成长组合构造", test_growth_backtest),
     ("方法论", test_methodology),
     ("订单护栏/账本", test_guard),
     ("下单通道", test_gateway),
