@@ -21,12 +21,31 @@
       "spec": {
         "universe": "沪深两市，不含北交所/B 股；剔 ST/次新(<365d)/停牌/一字板/退市整理期",
         "factors": {
-          "growth": ["g4_eav", "e1_contract_yoy"],
-          "quality": ["g5_stability", "g8_gm_yoy", "g9_roic"],
-          "rnd": ["e3_rd_delta"],
-          "aux": ["a1_reversal", "a2_amihud", "n8_unlock_60d", "n9_unlock_120d"]
+          "growth": [
+            "g4_eav",
+            "e1_contract_yoy"
+          ],
+          "quality": [
+            "g5_stability",
+            "g8_gm_yoy",
+            "g9_roic"
+          ],
+          "rnd": [
+            "e3_rd_delta"
+          ],
+          "aux": [
+            "a1_reversal",
+            "a2_amihud",
+            "n8_unlock_60d",
+            "n9_unlock_120d"
+          ]
         },
-        "block_weights": {"growth": 0.4, "quality": 0.25, "rnd": 0.15, "aux": 0.2},
+        "block_weights": {
+          "growth": 0.4,
+          "quality": 0.25,
+          "rnd": 0.15,
+          "aux": 0.2
+        },
         "gate": "近 4 个单季扣非单季同比>0 且基期>0 至少 2 季",
         "top_k": 50,
         "weighting": "equal",
@@ -42,8 +61,14 @@
           "commission": 0.00025,
           "commission_min": 5.0,
           "stamp_sell": 0.0005,
-          "transfer": 0.00001,
-          "slippage_bp": [2.0, 2.5, 3.0, 4.0, 5.0],
+          "transfer": 1e-05,
+          "slippage_bp": [
+            2.0,
+            2.5,
+            3.0,
+            4.0,
+            5.0
+          ],
           "slippage_mode": "5 档按月末 ADV20 + Amihud 事前定档",
           "round_trip_default_bp": 14.2
         },
@@ -96,7 +121,8 @@
         "results/growth/holdout/",
         "results/growth/factor-ic.md"
       ],
-      "git_tag": "v1.0-growth-cap25-20261022"
+      "git_tag": "v1.0-growth-cap25-20261022",
+      "release": "results/releases/v1.0-growth-cap25"
     },
     {
       "id": "redlow",
@@ -106,9 +132,17 @@
       "status": "frozen / oos-contaminated",
       "role": "底仓 / 防守",
       "report": "docs/策略报告/红利低波.md",
-      "entrypoints": ["scripts/final_spec.py", "scripts/strategy_registry.py"],
+      "entrypoints": [
+        "scripts/final_spec.py",
+        "scripts/strategy_registry.py"
+      ],
       "spec": {
-        "factors": ["div_yield", "vol_60", "turnover_20", "insider_net_20"],
+        "factors": [
+          "div_yield",
+          "vol_60",
+          "turnover_20",
+          "insider_net_20"
+        ],
         "weighting": "equal",
         "top_k": 50,
         "gross_exposure": 0.95,
@@ -141,7 +175,8 @@
         "results/redlow/",
         "results/crisis/aligned-final-spec.csv"
       ],
-      "git_tag": null
+      "git_tag": null,
+      "release": null
     },
     {
       "id": "redlow_enhanced",
@@ -151,9 +186,17 @@
       "status": "frozen / oos-contaminated",
       "role": "底仓 / 防守（与红利低波同一选股，仅改执行）",
       "report": "docs/策略报告/红利低波增强.md",
-      "entrypoints": ["scripts/improvement_shadow.py", "scripts/strategy_registry.py"],
+      "entrypoints": [
+        "scripts/improvement_shadow.py",
+        "scripts/strategy_registry.py"
+      ],
       "spec": {
-        "factors": ["div_yield", "vol_60", "turnover_20", "insider_net_20"],
+        "factors": [
+          "div_yield",
+          "vol_60",
+          "turnover_20",
+          "insider_net_20"
+        ],
         "selection": "与 redlow 逐位相同的 weights 矩阵",
         "execution": "只在调仓日成交（ShadowEngine policy=monthly）",
         "delisting": "haircut30",
@@ -172,8 +215,12 @@
           "trades": 4628
         }
       },
-      "artifacts": ["results/strategy-registry/", "results/improvement-shadow/"],
-      "git_tag": null
+      "artifacts": [
+        "results/strategy-registry/",
+        "results/improvement-shadow/"
+      ],
+      "git_tag": null,
+      "release": null
     }
   ]
 }

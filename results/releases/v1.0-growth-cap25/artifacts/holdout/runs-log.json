@@ -1,0 +1,37 @@
+{
+  "note": "holdout 一次性验收的全部运行留痕。策略/因子/参数/规则全程未改；差异仅来自建仓日边界与净值起点的工程处理。",
+  "frozen_spec": {
+    "spec": "cap25 (QN 十因子 + 四块 40/25/15/20 + 50 只 + gross 0.95 + 单票 4% + 门类 25% + 缓冲带 60 + 逐日回归忽略<5000元 + 分档滑点 + haircut30 + E 层默认开)",
+    "window": "2025-01-02 ~ 2026-10-16",
+    "financial_cutoff": "2026-10-16",
+    "alt_data_cutoff": "2024-12-31"
+  },
+  "runs": [
+    {
+      "id": "run1",
+      "dir": "results/growth/holdout/run1-boundary-bug",
+      "issue": "窗口从 2025-01-02 起，2024-12-31 的信号行不在窗口内 -> 1 月整月空仓",
+      "result": {"total": 0.3904, "cagr": 0.2051, "sharpe": 1.090, "mdd": -0.1616}
+    },
+    {
+      "id": "run2",
+      "dir": "results/growth/holdout/run2-boundary-cash",
+      "issue": "补了 2024-12-31 信号行，但引擎按窗口裁掉前一行 -> 仍 1 月空仓",
+      "result": {"total": 0.4102, "cagr": 0.2148, "sharpe": 1.134, "mdd": -0.1622}
+    },
+    {
+      "id": "run3",
+      "dir": "results/growth/holdout/run3-firstday-dropped",
+      "issue": "2025-01-02 即建仓，但净值起点误用首日收盘（漏掉首日盘中变动）",
+      "result": {"total": 0.4370, "cagr": 0.2145, "sharpe": 1.117, "mdd": -0.1624}
+    },
+    {
+      "id": "run4",
+      "dir": "results/growth/holdout",
+      "issue": "最终：起点保留 2024-12-31 的 100 万现金（一天无持仓），2025-01-02 开盘建仓",
+      "result": {"total": 0.4106, "cagr": 0.2150, "sharpe": 1.118, "mdd": -0.1624},
+      "final": true
+    }
+  ],
+  "consumed_marker": "consumed.json 的 force=true 表示其中若干次是为修正工程边界而显式覆盖，均记录在此；未据 holdout 结果改动任何策略规则"
+}

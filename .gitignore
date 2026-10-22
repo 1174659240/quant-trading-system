@@ -1,8 +1,11 @@
-# 运行产物
-results/
+# 运行产物（releases 例外：冻结版本的证据要进仓库）
+results/*
+!results/releases/
+!results/releases/**
 data/cache/
 data/paper/
 data/csv/
+data/orders/
 _tmp/
 tmp*/
 
@@ -19,6 +22,3 @@ venv/
 .DS_Store
 Thumbs.db
 *.log
-
-# 运行期交易产物
-data/orders/

@@ -1,0 +1,29 @@
+{
+  "cap30": {
+    "months": 96,
+    "max_share_mean": 0.2999999999999999,
+    "max_share_p90": 0.3,
+    "max_share_max": 0.30000000000000004,
+    "months_at_cap": 96,
+    "avg_sectors": 12.041666666666666,
+    "avg_names": 50.0,
+    "avg_gross": 0.9499999999999998,
+    "top_sector_freq": {
+      "C": 96
+    }
+  },
+  "cap25": {
+    "months": 96,
+    "max_share_mean": 0.25999999999999995,
+    "max_share_p90": 0.26,
+    "max_share_max": 0.26000000000000006,
+    "months_at_cap": 96,
+    "avg_sectors": 12.25,
+    "avg_names": 50.0,
+    "avg_gross": 0.9499999999999998,
+    "top_sector_freq": {
+      "C": 94,
+      "B": 2
+    }
+  }
+}

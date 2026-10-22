@@ -1,0 +1,42 @@
+{
+  "sample": "main",
+  "trigger_days": 2,
+  "plans": {
+    "none": {
+      "days_cleared": 0,
+      "days_partial": 0,
+      "avg": 1.0,
+      "min": 1.0,
+      "tranches": null
+    },
+    "extreme": {
+      "days_cleared": 21,
+      "days_partial": 40,
+      "avg": 0.9872,
+      "min": 0.0,
+      "tranches": 3
+    },
+    "extreme_qvix": {
+      "days_cleared": 23,
+      "days_partial": 39,
+      "avg": 0.9865,
+      "min": 0.0,
+      "tranches": 3
+    },
+    "gradient": {
+      "days_cleared": 0,
+      "days_partial": 1482,
+      "avg": 0.8051,
+      "min": 0.5,
+      "tranches": 33
+    },
+    "binary": {
+      "days_cleared": 701,
+      "days_partial": 157,
+      "avg": 0.7073,
+      "min": 0.0,
+      "tranches": null
+    }
+  },
+  "elapsed": 189.4
+}

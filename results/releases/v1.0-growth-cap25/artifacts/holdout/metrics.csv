@@ -1,0 +1,2 @@
+﻿spec,label,total_return,cagr,sharpe,max_drawdown,calmar,excess_total,fees,fees_pct_of_equity,trades,ann_turnover_one_way,weighted_slip_bp,slip_label,avg_exposure,min_exposure,cash_days,elapsed,mdd_date
+cap25,冻结口径 QN + E 层,0.41058446074261346,0.21445890120710498,1.1166325189320416,-0.162360066016641,1.3208845405687637,0.111355,11085.2137073869,0.004785164512220877,1067,3.925565217391305,3.565845493493295,分档,0.8828084712982763,0.0,1,,2026-07-17
