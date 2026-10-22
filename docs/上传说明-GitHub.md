@@ -45,7 +45,15 @@
 
 ## 3. 怎么把数据补回来
 
-数据层不是一次性下载，而是分步冻结的（详见 `docs/数据层齐全度核对表.md`）：
+> **首选**：一条命令从公开源复现，并自动对账 —— 见 [`数据复现手册.md`](数据复现手册.md)。
+>
+> ```bash
+> python -m scripts.reproduce_lake --list      # 21 个阶段、预计 28 小时
+> python -m scripts.reproduce_lake             # 中断后重跑即续跑
+> python -m scripts.reproduce_lake --verify-only   # 与 docs/data-reference-counts.json 对账
+> ```
+
+数据层不是一次性下载，而是分步冻结的（详见 `docs/数据层齐全度核对表.md`）。下面是不用复现脚本时的等价手工步骤：
 
 ```bash
 python -m quant fetch                 # 日线/估值等基础层（公开源，慢）

@@ -230,7 +230,12 @@
 python tests/run_all.py                 # 210 项离线自测
 python -m quant doctor                  # 环境自检，报告写 results/doctor.md
 
-# 1) 数据湖（D 盘，约 3.8 GB；命令可断点续跑）
+# 1) 数据湖（D 盘，约 3.8 GB）
+#    推荐：一条命令从公开源复现（28 小时，可中断续跑，全部免费源）
+python -m scripts.reproduce_lake --list      # 看阶段与耗时
+python -m scripts.reproduce_lake             # 从头跑；中断后重跑即续跑
+python -m scripts.reproduce_lake --verify-only   # 与参考计数对账
+#    或者按需手工执行（等价于上面的分阶段）：
 python -m quant lake init
 python -m quant lake universe           # 全市场代码表
 python -m quant lake crawl --source auto
@@ -263,6 +268,7 @@ python -m scripts.trade check --orders results/orders/latest.csv
 | 三条策略的总体报告与台账 | [`docs/策略报告/`](docs/策略报告/README.md) |
 | 小盘成长的权威口径（数据核对、因子、评估协议、逐阶段结论） | [`docs/小盘成长策略设计与数据核对.md`](docs/小盘成长策略设计与数据核对.md) |
 | 数据层口径与 15 条偏差声明（**引用数据前必读**） | [`docs/数据层齐全度核对表.md`](docs/数据层齐全度核对表.md) |
+| **数据从哪来、怎么重采、怎么对账** | [`docs/数据复现手册.md`](docs/数据复现手册.md) |
 | 预注册与冻结规则（写死在前，不可回改） | `docs/极端风险清仓预注册.md`、`docs/小盘成长策略-左侧回场预注册.md`、`docs/QVIX回补与多危机泛化预注册.md`、`docs/稳健改进三项-预注册.md` |
 | 实盘接入与合规 | [`docs/实盘接入与合规.md`](docs/实盘接入与合规.md) |
 | 仓库内容 / 未上传数据 / 重采命令 | [`docs/上传说明-GitHub.md`](docs/上传说明-GitHub.md) |

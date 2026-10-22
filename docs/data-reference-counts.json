@@ -1,0 +1,64 @@
+{
+  "generated_at": "2026-10-22T13:18:01Z",
+  "root": "D:\\quant-data",
+  "layers": {
+    "raw/daily": {
+      "files": 5575,
+      "bytes": 783820062
+    },
+    "processed/parquet": {
+      "files": 9,
+      "bytes": 187576090,
+      "rows": 8557867
+    },
+    "holdout/parquet": {
+      "files": 2,
+      "bytes": 54735894,
+      "rows": 2343739
+    },
+    "valuation": {
+      "files": 5482,
+      "bytes": 827006791,
+      "rows": 12379912
+    },
+    "fundamentals": {
+      "files": 275,
+      "bytes": 313498596,
+      "rows": 1402823
+    },
+    "ref": {
+      "files": 7,
+      "bytes": 60629527,
+      "rows": 255673
+    },
+    "events": {
+      "files": 6,
+      "bytes": 41500105,
+      "rows": 523485
+    },
+    "alt": {
+      "files": 4,
+      "bytes": 50699867,
+      "rows": 1376933
+    },
+    "delisted": {
+      "files": 256,
+      "bytes": 35830556,
+      "rows": 536732
+    },
+    "growth-history/parquet": {
+      "files": 10,
+      "bytes": 102485728,
+      "rows": 5264940
+    },
+    "early/parquet": {
+      "files": 5,
+      "bytes": 66781538,
+      "rows": 1491434
+    },
+    "early/indices": {
+      "files": 4,
+      "bytes": 270153
+    }
+  }
+}
