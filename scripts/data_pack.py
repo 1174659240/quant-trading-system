@@ -55,12 +55,15 @@ LAYERS: dict[str, dict] = {
     "raw": {"roots": ["raw"], "extra": [], "note": "不复权原始 CSV（体积大，一般用不到）"},
 }
 
+#: holdout 层只对所有者开放（一次性验收集，协作者不应持有）
+OWNER_ONLY = {"holdout"}
+
 PRESETS = {
-    "core": ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt", "holdout"],
-    "core+valuation": ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt", "holdout", "valuation"],
+    "core": ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt"],
+    "core+valuation": ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt", "valuation"],
     "all": list(LAYERS),
 }
-PRESETS["all"] = ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt", "holdout", "valuation", "history", "raw"]
+PRESETS["all"] = ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt", "valuation", "history", "raw"]
 
 
 def sha256_file(path: Path, chunk: int = 4 << 20) -> str:
@@ -202,12 +205,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--level", type=int, default=6, help="gzip 压缩级别 1-9")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--plan", action="store_true", help="只估算体积，不写文件")
+    ap.add_argument("--with-holdout", action="store_true",
+                    help="所有者：把 holdout 层也打进包（需环境变量 QUANT_OWNER=1）")
     args = ap.parse_args(argv)
 
+    if args.with_holdout:
+        if os.environ.get("QUANT_OWNER", "").strip() not in {"1", "true", "yes"}:
+            raise SystemExit("[拒绝] --with-holdout 只对所有者开放：请设 QUANT_OWNER=1 再运行。")
+        if "holdout" not in PRESETS:
+            pass
+        extra = ["holdout"]
+    else:
+        extra = []
+
     layers = PRESETS.get(args.layers, [s.strip() for s in args.layers.split(",") if s.strip()])
+    layers = list(dict.fromkeys([*layers, *extra]))
     unknown = [n for n in layers if n not in LAYERS]
     if unknown:
         raise SystemExit(f"未知的层：{unknown}；可选 {sorted(LAYERS)} 或 {sorted(PRESETS)}")
+    blocked = [n for n in layers if n in OWNER_ONLY and not extra]
+    if blocked:
+        raise SystemExit(f"[拒绝] 这些层只对所有者开放：{blocked}；加 --with-holdout 且设 QUANT_OWNER=1")
 
     rows = estimate(layers, args.lake)
     total = sum(r["bytes"] for r in rows)

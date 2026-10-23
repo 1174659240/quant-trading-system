@@ -27,6 +27,7 @@ import test_events  # noqa: E402
 import test_factors  # noqa: E402
 import test_gateway  # noqa: E402
 import test_growth  # noqa: E402
+import test_gates  # noqa: E402
 import test_growth_backtest  # noqa: E402
 import test_guard  # noqa: E402
 import test_holdout  # noqa: E402
@@ -58,6 +59,7 @@ SUITES = [
     ("holdout 隔离", test_holdout),
     ("危机识别", test_regime),
     ("复权/停牌", test_actions),
+    ("放行关卡", test_gates),
 ]
 
 

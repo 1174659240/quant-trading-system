@@ -177,8 +177,7 @@ def check_text_hygiene(fail: list[str]) -> int:
     """文本里不该出现的控制字符与制表符。
 
     起因：写文档时把 Markdown 反引号代码段交给 PowerShell 双引号字符串，
-    ` 
- ` 变成回车、` 	 ` 变成制表符，文本被静默破坏且看不出来。
+    反引号 + r 会变成回车、反引号 + t 会变成制表符，文本被静默破坏且看不出来。
     """
     scanned = 0
     for rel in tracked_files():
@@ -197,6 +196,50 @@ def check_text_hygiene(fail: list[str]) -> int:
     return scanned
 
 
+def check_holdout_isolation(fail: list[str]) -> int:
+    """holdout 隔离的「绊线」：确认各入口的所有者闸门没被删掉。
+
+    这不是安全边界（改代码当然能绕过），而是防止「为了让流程跑通，顺手把闸门删了」。
+    每一条都是入口脚本里的关键字符串，删掉任何一条都会在这里报出来。
+    """
+    tripwires = {
+        "scripts/reproduce_lake.py": [
+            ('SAMPLE_END = "2024-12-31"', "复现截止日必须是 2024-12-31"),
+            ("def is_owner()", "所有者判定函数"),
+            ('"--allow-holdout"', "holdout 命令行开关"),
+            ("QUANT_OWNER", "所有者环境变量"),
+        ],
+        "scripts/data_pack.py": [
+            ('OWNER_ONLY = {"holdout"}', "holdout 层必须标为所有者专属"),
+            ('"--with-holdout"', "holdout 打包开关"),
+            ("QUANT_OWNER", "所有者环境变量"),
+        ],
+        "scripts/data_pull.py": [
+            ('"--with-holdout"', "holdout 下载开关"),
+            ("QUANT_OWNER", "所有者环境变量"),
+        ],
+        "scripts/growth_holdout.py": [
+            ('consumed.json', "一次性消费标记"),
+        ],
+        "scripts/gate_holdout.py": [
+            ("holdout-consumed.json", "关卡 3 的消费标记"),
+            ("def criteria_sha()", "判据指纹"),
+        ],
+    }
+    checked = 0
+    for rel, needles in tripwires.items():
+        path = ROOT / rel
+        if not path.is_file():
+            fail.append(f"holdout 隔离：缺少入口脚本 {rel}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        checked += 1
+        for needle, why in needles:
+            if needle not in text:
+                fail.append(f"holdout 隔离：{rel} 里找不到 {needle!r}（{why}）")
+    return checked
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="仓库纪律自检")
     ap.add_argument("--quiet", action="store_true", help="只打印失败项")
@@ -213,6 +256,7 @@ def main() -> int:
     strategies = check_registry(fail)
     check_ignore(fail)
     check_text_hygiene(fail)
+    check_holdout_isolation(fail)
 
     if not args.quiet:
         print(f"跟踪文件 {len(files)} 个；冻结证据 {release_files} 个文件已校验；策略 {strategies} 条")

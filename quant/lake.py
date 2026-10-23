@@ -397,6 +397,7 @@ class Lake:
         *,
         source: str = "auto",
         start: str | None = None,
+        end: str | None = None,
         pause: float = 0.30,
         limit: int | None = None,
         resume: bool = True,
@@ -430,7 +431,7 @@ class Lake:
         for index, symbol in enumerate(todo, start=1):
             try:
                 client, name = client_for(symbol)
-                frame = client.load(symbol, start=start or self.raw_start)
+                frame = client.load(symbol, start=start or self.raw_start, end=end)
                 if frame is None or len(frame) < self.min_raw_rows:
                     raise DataError(f"行数过少（{0 if frame is None else len(frame)} < {self.min_raw_rows}）")
                 self.persist_raw(symbol, frame, source=name)
@@ -832,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--pause", type=float, default=0.30)
         parser.add_argument("--source", default="tencent", choices=["tencent", "sina", "eastmoney", "auto"])
         parser.add_argument("--start", default=None)
+        parser.add_argument("--end", default=None, help="截止日 YYYY-MM-DD；缺省抓到当天")
         parser.add_argument("--force", action="store_true")
         parser.add_argument("--symbols", default=None, help="逗号分隔，缺省用代码表")
     if action == "verify":
@@ -962,6 +964,7 @@ def main(argv: list[str] | None = None) -> int:
             symbols,
             source=args.source,
             start=args.start,
+            end=args.end,
             limit=args.limit,
             pause=args.pause,
             force=args.force,

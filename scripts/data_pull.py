@@ -130,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base-url", default="", help="覆盖清单里的 base_url（镜像用）")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--keep-archives", action="store_true", help="解包后保留下载的归档")
+    ap.add_argument("--with-holdout", action="store_true",
+                    help="所有者：包含 holdout 层（需环境变量 QUANT_OWNER=1）")
     args = ap.parse_args(argv)
 
     if args.manifest_url.startswith("http"):
@@ -137,8 +139,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         manifest = json.loads(Path(args.manifest_url).read_text(encoding="utf-8"))
 
-    presets = {"core": ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt", "holdout"]}
+    presets = {"core": ["meta", "ref", "bars", "fundamentals", "events", "delisted", "alt"]}
     names = presets.get(args.layers, [s.strip() for s in args.layers.split(",") if s.strip()])
+    if "holdout" in names:
+        if not args.with_holdout:
+            raise SystemExit("[拒绝] holdout 层只对所有者开放；加 --with-holdout 且设 QUANT_OWNER=1")
+        if os.environ.get("QUANT_OWNER", "").strip() not in {"1", "true", "yes"}:
+            raise SystemExit("[拒绝] --with-holdout 只对所有者开放：请设 QUANT_OWNER=1 再运行。")
     base = (args.base_url or manifest.get("base_url", "")).rstrip("/")
     state = local_state(args.dest)
 

@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1454,16 +1455,24 @@ def load_saved_holdout() -> dict | None:
 # --------------------------------------------------------------------------- main
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="影子改进版评估（只读现有策略）")
-    parser.add_argument("--sample", action="store_true", help="只跑样本内")
+    parser.add_argument("--sample", action="store_true", help="只跑样本内（默认行为）")
     parser.add_argument("--smoke", type=int, default=None, help="只取前 N 只标的（管线冒烟，不作结论）")
-    parser.add_argument("--skip-holdout", action="store_true", help="跳过 holdout")
+    parser.add_argument("--skip-holdout", action="store_true", help="跳过 holdout（默认已跳过）")
+    parser.add_argument("--with-holdout", action="store_true",
+                        help="所有者：跑 2025-01 起的样本外对照（需环境变量 QUANT_OWNER=1）")
     parser.add_argument("--report-only", action="store_true", help="不跑回测，仅用已落盘 CSV 重生成报告")
     args = parser.parse_args(argv)
+
+    owner = os.environ.get("QUANT_OWNER", "").strip() in {"1", "true", "yes"}
+    if args.with_holdout and not owner:
+        print("[拒绝] --with-holdout 只对所有者开放：请设 QUANT_OWNER=1 再运行。", flush=True)
+        return 2
+    run_holdout_flag = bool(args.with_holdout and owner and not args.skip_holdout)
 
     OUT.mkdir(parents=True, exist_ok=True)
     if args.report_only:
         sample = load_saved_sample()
-        holdout = None if args.sample else load_saved_holdout()
+        holdout = None if (args.sample or not run_holdout_flag) else load_saved_holdout()
         path = write_report(sample, holdout, args)
         print(f"报告已重生成 → {path}", flush=True)
         return 0
@@ -1485,7 +1494,7 @@ def main(argv=None) -> int:
         eq.rename("equity").to_csv(OUT / f"equity-{name}.csv", encoding="utf-8-sig")
 
     holdout = None
-    if not args.sample and not args.skip_holdout:
+    if run_holdout_flag:
         # 预注册规则：insider 样本内弱/不稳（t<2 或 正 IC 年份 < 2/3）才跑 ③ 去 insider
         insider_row = sample["ic"][sample["ic"]["factor"] == "insider_net_20"]
         need_no_insider = False

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-22",
+  "updated_at": "2026-10-23",
   "note": "策略台账：机器可读的冻结参数与产物索引。改因子/参数/规则即视为新版本，旧报告的样本外结论作废。",
   "strategies": [
     {
@@ -129,7 +129,7 @@
       "name": "红利低波策略",
       "version": "frozen-2026-10-19",
       "frozen_at": "2026-10-19",
-      "status": "frozen / oos-contaminated",
+      "status": "frozen",
       "role": "底仓 / 防守",
       "report": "docs/策略报告/红利低波.md",
       "entrypoints": [
@@ -181,10 +181,10 @@
     {
       "id": "redlow_enhanced",
       "name": "红利低波增强策略",
-      "version": "frozen-2026-10-19",
+      "version": "wip-2026-10-23",
       "frozen_at": "2026-10-19",
-      "status": "frozen / oos-contaminated",
-      "role": "底仓 / 防守（与红利低波同一选股，仅改执行）",
+      "status": "draft",
+      "role": "底仓 / 防守（与红利低波同一选股，仅改执行）；半成品，样本外未验收",
       "report": "docs/策略报告/红利低波增强.md",
       "entrypoints": [
         "scripts/improvement_shadow.py",
@@ -220,7 +220,8 @@
         "results/improvement-shadow/"
       ],
       "git_tag": null,
-      "release": null
+      "release": null,
+      "note": "2026-10-23 按决定转为半成品：删除样本外（2025-01 起）数据与其原始文件（results/improvement-shadow/holdout-*），去掉「已污染」标识。样本内数字仍可复算；后续改进由协作者在没有 holdout 的前提下推进。"
     }
   ]
 }
