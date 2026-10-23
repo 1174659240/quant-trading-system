@@ -1,0 +1,8 @@
+# 统一行尾：仓库内存 LF，Windows 检出也不转换钩子与脚本
+* text=auto
+*.py text eol=lf
+*.sh text eol=lf
+.githooks/* text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf

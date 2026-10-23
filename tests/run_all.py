@@ -61,11 +61,52 @@ SUITES = [
 ]
 
 
-def main() -> int:
+def suite_key(module) -> str:
+    """稳定、可在 shell 里用的套件键（test_refdata -> refdata）。"""
+    return module.__name__.removeprefix("test_")
+
+
+#: 需要真实数据湖（D:/quant-data）或外网的套件；干净机器上应跳过。
+#: factors 里有「每个已注册因子都能算出来」的断言，mcap/fmcap 要读 ref/shares.csv。
+LAKE_SUITES = frozenset({"factors", "refdata", "events", "holdout", "web_source"})
+
+
+def select(argv: list[str]) -> tuple[list[tuple[str, object]], int]:
+    """按命令行参数挑套件；返回 (套件列表, 被跳过的数量)。"""
+    only = None
+    for i, arg in enumerate(argv):
+        if arg == "--suite" and i + 1 < len(argv):
+            only = argv[i + 1]
+    skip_lake = "--skip-lake" in argv
+    if "--list" in argv:
+        for name, module in SUITES:
+            key = suite_key(module)
+            flag = "lake" if key in LAKE_SUITES else "offline"
+            print(f"{key}\t{flag}\t{name}")
+        raise SystemExit(0)
+    picked: list[tuple[str, object]] = []
+    skipped = 0
+    for name, module in SUITES:
+        key = suite_key(module)
+        if only is not None and only not in (key, name):
+            continue
+        if skip_lake and key in LAKE_SUITES:
+            skipped += 1
+            continue
+        picked.append((name, module))
+    if only is not None and not picked:
+        raise SystemExit(f"没有匹配的套件：{only}（--list 看可用键）")
+    return picked, skipped
+
+
+def main(argv: list[str] | None = None) -> int:
+    suites, skipped = select(list(sys.argv[1:] if argv is None else argv))
+    if skipped:
+        print(f"(跳过 {skipped} 个需要数据湖/外网的套件)")
     failed: list[tuple[str, str, str]] = []
     passed = 0
     started = time.time()
-    for suite_name, module in SUITES:
+    for suite_name, module in suites:
         tests = [
             (name, obj)
             for name, obj in vars(module).items()

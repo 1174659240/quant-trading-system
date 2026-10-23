@@ -22,7 +22,12 @@
 
 - **不新增第三方依赖**。核心只依赖 pandas / numpy；采集脚本用 akshare / baostock 属于可选，
   但要在 `pyproject.toml` 的 extras 里声明。
-- 改动要过 `python tests/run_all.py`（210 项离线自测，约 2 分钟，不需要数据湖）。
+- 改动要过 `python tests/run_all.py`（210 项离线自测，约 2 分钟，不需要数据湖）；
+  没有数据湖时用 `python tests/run_all.py --skip-lake`。
+- 提交前跑一次 `python scripts/repo_guard.py`（体积、数据文件、凭据、冻结证据、台账、忽略规则）。
+  也可以装成本地钩子：`git config core.hooksPath .githooks`，push 前自动跑。
+- **改成 pull request，不直接推 main**。main 开了分支保护：必须过 CI、必须有 review、不许强推。
+  具体设置见 [`docs/协作与分支保护.md`](docs/协作与分支保护.md)。
 - **不改 `quant/` 的语义**：因子、撮合、费用、风控的任何改动都会改变历史结论，
   必须写成新版本并重跑受影响的报告。
 - **数据与结果不进 git**：`D:/quant-data` 与 `results/` 都在 `.gitignore` 里，

@@ -1,0 +1,53 @@
+name: 检查
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: 仓库纪律
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 体积 / 数据文件 / 凭据 / 冻结证据 / 台账
+        run: python scripts/repo_guard.py
+
+  tests:
+    name: 离线测试 py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 安装依赖
+        run: pip install "pandas>=3.0,<4" "numpy>=2.0" "pyarrow>=15" "requests>=2.28"
+      - name: 逐套件跑（每套件独立进程，避免跨套件全局状态污染）
+        shell: bash
+        run: |
+          python tests/run_all.py --list | awk -F'\t' '$2=="offline"{print $1}' > suites.txt
+          echo "本次运行：" $(tr '\n' ' ' < suites.txt)
+          status=0
+          while read -r suite; do
+            echo "::group::$suite"
+            python tests/run_all.py --suite "$suite" || status=1
+            echo "::endgroup::"
+          done < suites.txt
+          echo "需要数据湖而跳过：" $(python tests/run_all.py --list | awk -F'\t' '$2=="lake"{print $1}' | tr '\n' ' ')
+          exit $status
