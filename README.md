@@ -1,5 +1,7 @@
 # 量化交易系统
 
+[![检查](https://github.com/1174659240/quant-trading-system/actions/workflows/ci.yml/badge.svg)](https://github.com/1174659240/quant-trading-system/actions/workflows/ci.yml)
+
 A 股日线量化研究系统，以及基于同一套引擎的 Windows 桌面交易客户端（规划中）。
 代码只依赖 pandas / numpy，数据来自免费公开源。
 
