@@ -2,8 +2,10 @@
 
 设计意图：holdout 只能被这个脚本消费一次，判据在 ``CRITERIA`` 里写死并带 sha256。
 脚本会：
+0. **先校验关卡 2 的硬否决层**（新版 gate2-v2）：关卡 1 通过、置换 p 达标、成本档下年化为正、
+   目标规模参与率达标，缺一项就直接拒绝（非 0 退出），不碰 holdout；
 1. 跑关卡 1（离线测试，``--skip-lake``），记录退出码；
-2. 读最近的关卡 2 报告（**仅作参考**，不阻断）；
+2. 读最近的关卡 2 报告，取它的强参考层结论（是否「多重稳健性告警」）；
 3. 用冻结姿态跑一次 holdout（``scripts/growth_holdout``），写进 ``results/gates/holdout-<stamp>/``；
 4. 按预注册判据判断「换一个新样本后是否掉太多」，分四步：
    a) 先认行情：用同池等权基准算 holdout 窗口的年化/波动/最大回撤，打一个行情标签；
@@ -11,7 +13,9 @@
    c) 定底线：取同类窗口里策略年化、夏普的 25% 分位作为底线（同类窗口太少时退化为全样本分位）；
    d) 判决：holdout 的年化、夏普都不低于底线，且相对同池等权不落后超过 5pp/年，才算 PASS。
    新样本的行情与策略在其中的相对位置（beta、相关、月度胜率、日频超额 t）如实记录，供人看；
-5. 三项全过才 ``PASS``，否则 ``FAIL``，并把结论写进 ``results/gates/holdout-verdict.json``。
+5. 三项全过才 ``PASS``，否则 ``FAIL``；若关卡 2 有「多重稳健性告警」，即使行情达标也判 ``HOLD``，
+   要所有者用 ``--owner-confirm "理由"`` 才能放行；
+6. 结论写进 ``results/gates/holdout-verdict.json``。
 
 **没有 --tune、没有 --relax**：想改判据只能改这份文件（sha256 会变，报告里会显示），
 且必须在 ``docs/放行流程.md`` 里先写预注册。
@@ -19,7 +23,7 @@
 用法::
 
     python -X utf8 -m scripts.gate_holdout            # 正式验收（会消费 holdout）
-    python -X utf8 -m scripts.gate_holdout --dry-run  # 只做关卡 1 + 读现状，不动 holdout
+    python -X utf8 -m scripts.gate_holdout --dry-run  # 只做关卡 2 校验 + 关卡 1，不动 holdout
 """
 from __future__ import annotations
 
@@ -88,14 +92,59 @@ def gate1_offline(timeout: int = 900) -> dict:
             "seconds": round(time.time() - started, 1), "tail": tail}
 
 
-def gate2_record(strategy: str = "growth_cap25") -> dict:
-    """读最近的关卡 2 报告（只作参考）。"""
-    files = sorted(GATES.glob(f"gate2-{strategy}-*.json"))
+def gate2_precheck(strategy: str = "growth_cap25", *, gates: Path | None = None) -> dict:
+    """关卡 3 的前置闸门：关卡 2 的硬否决层必须过，否则不许碰 holdout。
+
+    校验四件事：报告存在且是新版（gate2-v2）、判据 sha 与当前一致（判据变过要重跑）、
+    预注册仍与锁文件一致、硬否决层全过。强参考层的「多重告警」不在这里拦，
+    它会在判决阶段把 PASS 降级为 HOLD。
+    """
+    from scripts import gate_robustness as g2
+
+    gates = gates or GATES
+    files = sorted(gates.glob(f"gate2-{strategy}-*.json"))
     if not files:
-        return {"found": False}
-    data = json.loads(files[-1].read_text(encoding="utf-8"))
-    return {"found": True, "file": str(files[-1]), "passed": data.get("passed"),
-            "elapsed_s": data.get("elapsed_s")}
+        return {"ok": False, "reason": f"未找到关卡 2 报告（{gates}/gate2-{strategy}-*.json）"}
+    path = files[-1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "reason": f"关卡 2 报告读不出来：{exc}", "file": str(path)}
+    if data.get("version") != g2.CRITERIA_VERSION:
+        return {"ok": False, "file": str(path),
+                "reason": f"关卡 2 报告是旧格式（{data.get('version')}，无硬否决层），需重跑"}
+    if data.get("criteria_sha") != g2.criteria_sha():
+        return {"ok": False, "file": str(path),
+                "reason": "关卡 2 判据已变（criteria_sha 不一致），需重跑关卡 2"}
+    if data.get("light"):
+        return {"ok": False, "file": str(path), "reason": "关卡 2 是轻量模式，硬否决未计算"}
+    prereg = g2.verify_prereg(strategy)
+    if not prereg["ok"]:
+        return {"ok": False, "file": str(path), "reason": f"预注册失效：{prereg['reason']}"}
+    hard = data.get("hard") or {}
+    if not hard.get("passed"):
+        failed = ", ".join(hard.get("failed") or []) or "未知"
+        return {"ok": False, "file": str(path), "reason": f"关卡 2 硬否决未通过：{failed}"}
+    soft = data.get("soft") or {}
+    return {"ok": True, "file": str(path), "verdict": data.get("verdict"),
+            "archetype": data.get("archetype"), "target_aum": data.get("target_aum"),
+            "multi_alarm": bool(soft.get("multi_alarm")),
+            "soft_failed": soft.get("failed") or [], "generated": data.get("generated")}
+
+
+def gate3_verdict(checks_passed: bool, gate1_passed: bool, *, multi_alarm: bool = False,
+                  owner_confirm: str | None = None) -> dict:
+    """把三层结果合成最终判决（纯函数，便于单测）。
+
+    行情达标 + 关卡 1 达标 = 通过；若关卡 2 报「多重稳健性告警」，默认降级为 HOLD，
+    只有所有者显式 ``--owner-confirm`` 才放行。
+    """
+    passed = bool(checks_passed and gate1_passed)
+    if passed and multi_alarm and not owner_confirm:
+        return {"passed": False, "verdict": "HOLD", "blocked_by": "gate2-multi-alarm",
+                "owner_confirmation": None}
+    return {"passed": passed, "verdict": "PASS" if passed else "FAIL", "blocked_by": None,
+            "owner_confirmation": (owner_confirm if (passed and multi_alarm) else None)}
 
 
 def is_frames() -> tuple[pd.DataFrame, pd.Series]:
@@ -274,8 +323,10 @@ def evaluate(daily: pd.DataFrame, bench_series: pd.Series, *, cagr: float, sharp
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="关卡 3：一次性 holdout 验收（机器执行）")
     ap.add_argument("--strategy", default="growth_cap25")
-    ap.add_argument("--dry-run", action="store_true", help="只跑关卡 1 与读现状，不消费 holdout")
+    ap.add_argument("--dry-run", action="store_true", help="只跑关卡 2 校验 + 关卡 1，不消费 holdout")
     ap.add_argument("--force", action="store_true", help="已经消费过时强制再跑（会覆盖旧结论，谨慎）")
+    ap.add_argument("--owner-confirm", default=None, metavar="REASON",
+                    help="关卡 2 报「多重稳健性告警」时，所有者写理由强行放行（会写进结论文件）")
     ap.add_argument("--out", type=Path, default=GATES)
     ap.add_argument("--evaluate-existing", type=Path, default=None,
                     help="用当前判据重算一份已消费的 holdout 产物（只读，不覆盖一次性标记）")
@@ -287,16 +338,29 @@ def main(argv: list[str] | None = None) -> int:
                     "git_commit": git_commit(), "criteria": CRITERIA, "criteria_sha": criteria_sha(),
                     "criteria_version": CRITERIA_VERSION, "criteria_note": CRITERIA_NOTE}
 
+    print("[gate3] 关卡 2 前置校验：硬否决层…", flush=True)
+    pre = gate2_precheck(args.strategy, gates=args.out)
+    record["gate2"] = pre
+    if not pre["ok"]:
+        print(f"[gate3] 拒绝进入关卡 3：{pre['reason']}")
+        record["blocked"] = "gate2-hard-veto"
+        record["verdict"] = "REJECTED"
+        record["elapsed_s"] = round(time.time() - started, 1)
+        (args.out / "holdout-verdict.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        return 3
+    print(f"[gate3]   通过（{Path(pre['file']).name}，"
+          f"多重告警={'是' if pre['multi_alarm'] else '否'}）")
+
     print("[gate3] 关卡 1：离线测试…", flush=True)
     record["gate1"] = gate1_offline()
     print(f"[gate3]   关卡1 {'通过' if record['gate1']['pass'] else '未通过'} "
           f"({record['gate1']['seconds']}s)")
 
-    record["gate2"] = gate2_record(args.strategy)
-    if not record["gate2"].get("found"):
-        print("[gate3]   未找到关卡 2 报告——按约定只作参考，继续")
-    else:
-        print(f"[gate3]   关卡2 参考值：passed={record['gate2']['passed']}")
+    multi_alarm = bool(pre.get("multi_alarm"))
+    if multi_alarm:
+        print("[gate3]   注意：关卡 2 报「多重稳健性告警」，行情达标也只会判 HOLD，"
+              "需要 --owner-confirm 才放行")
 
     if args.evaluate_existing is not None:
         hold_dir = args.evaluate_existing
@@ -304,7 +368,8 @@ def main(argv: list[str] | None = None) -> int:
         record["mode"] = "recheck-existing"
         record["holdout_dir"] = str(hold_dir)
         record["note"] = "重算：这份 holdout 已被消费，结论不是盲测结果，只用于核对判据与留痕。"
-        assess(hold_dir, record, summary)
+        assess(hold_dir, record, summary, multi_alarm=multi_alarm,
+               owner_confirm=args.owner_confirm)
         return finish(record, args.out, started, consume=False,
                       filename="holdout-verdict-recheck.json")
 
@@ -327,11 +392,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[gate3] 关卡 3：跑 holdout（{out_dir}）…", flush=True)
     run = run_holdout(out_dir, force=True)
     record["holdout_dir"] = str(out_dir)
-    assess(out_dir, record, run["summary"])
+    assess(out_dir, record, run["summary"], multi_alarm=multi_alarm,
+           owner_confirm=args.owner_confirm)
     return finish(record, args.out, started, consume=True)
 
 
-def assess(hold_dir: Path, record: dict, summary: dict) -> dict:
+def assess(hold_dir: Path, record: dict, summary: dict, *, multi_alarm: bool = False,
+           owner_confirm: str | None = None) -> dict:
     """读一份 holdout 产物，按当前判据算结论并写进 record（不碰标记、不写文件）。"""
     row = summary["metrics"]
     daily = pd.read_csv(hold_dir / "daily.csv")
@@ -344,7 +411,8 @@ def assess(hold_dir: Path, record: dict, summary: dict) -> dict:
     outcome = evaluate(daily, bench_series, cagr=float(row["cagr"]),
                        sharpe=float(row["sharpe"]), floor=floor)
     checks = outcome["checks"]
-    passed = all(c["pass"] for c in checks) and record["gate1"]["pass"]
+    verdict = gate3_verdict(all(c["pass"] for c in checks), record["gate1"]["pass"],
+                            multi_alarm=multi_alarm, owner_confirm=owner_confirm)
 
     record.update({
         "gate3": {"cagr": outcome["cagr"], "sharpe": outcome["sharpe"],
@@ -356,8 +424,10 @@ def assess(hold_dir: Path, record: dict, summary: dict) -> dict:
                   "turnover": float(row.get("ann_turnover_one_way", float("nan")))},
         "reference": outcome["reference"],
         "checks": checks,
-        "passed": passed,
-        "verdict": "PASS" if passed else "FAIL",
+        "passed": verdict["passed"],
+        "verdict": verdict["verdict"],
+        "blocked_by": verdict["blocked_by"],
+        "owner_confirmation": verdict["owner_confirmation"],
     })
     return record
 

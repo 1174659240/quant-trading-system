@@ -38,8 +38,9 @@
 - **holdout 不归协作者**：数据湖默认只重建到 2024-12-31（`reproduce_lake` / `data_pack` / `data_pull`
   都要求 `QUANT_OWNER=1` 才碰 holdout）。别去申请、也别自己拼 2025 年之后的数据；
   一次性验收由 `scripts/gate_holdout.py` 在所有者机器上执行一次。
-- **毕业要过三道关**：日常 CI → `scripts/gate_robustness.py`（参考值）→ `scripts/gate_holdout.py`（机器判决）。
-  规则见 [`docs/放行流程.md`](docs/放行流程.md)。
+- **毕业要过三道关**：日常 CI → `scripts/gate_robustness.py`（硬否决 + 强参考，硬否决不过不许碰 holdout）
+  → `scripts/gate_holdout.py`（机器判决）。策略类型与目标规模必须在关卡 2 预注册时锁定
+  （`--declare --archetype ... --target-aum ...`），**不许看到结果再选档**。规则见 [`docs/放行流程.md`](docs/放行流程.md)。
 - 提交信息用一句话说明"改了什么、为什么"，不要只写 "update"。
 
 ## 想复现或扩展
