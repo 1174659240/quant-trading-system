@@ -48,21 +48,93 @@ def test_gate2_markdown_renders():
 
 
 # ---------------------------------------------------------------- 关卡 3
-def test_gate3_evaluate_pass_when_excess_and_decay_ok():
+def _floor(cagr: float, sharpe: float, *, regime: str = "上涨·低波动",
+           basis: str = "same_regime", fallback: bool = False) -> dict:
+    """手搓一个底线包，用来测 evaluate 的判决逻辑（不读数据湖）。"""
+    return {"regime": regime, "windows_total": 40, "windows_same_regime": 12, "n_used": 12,
+            "basis": basis, "fallback": fallback, "window_days": 500,
+            "cagr_floor": cagr, "sharpe_floor": sharpe,
+            "cagr_median": cagr + 0.05, "sharpe_median": sharpe + 0.1,
+            "cagr_best": cagr + 0.30, "cagr_worst": cagr - 0.20}
+
+
+def _cagr_of(daily: pd.DataFrame) -> float:
+    return float((daily["equity"].iloc[-1] / daily["equity"].iloc[0]) ** (244 / len(daily)) - 1)
+
+
+def test_gate3_criteria_are_v3_regime_floor():
+    """v3：底线来自样本内同类行情的分位，不再是全样本保留率。"""
+    assert gh.CRITERIA_VERSION == "v3"
+    assert set(gh.CRITERIA) == {"cagr_floor_quantile", "sharpe_floor_quantile",
+                               "excess_cagr_min", "min_regime_windows", "window_step"}
+    assert len(gh.criteria_sha()) == 16
+    assert "v3" in gh.CRITERIA_NOTE
+
+
+def test_gate3_evaluate_pass_above_floor():
     daily, bench = _fake_daily()
-    cagr = float((daily["equity"].iloc[-1] / daily["equity"].iloc[0]) ** (244 / len(daily)) - 1)
-    outcome = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench, cagr, is_cagr_value=0.05)
-    assert outcome["excess_cagr"] > 0
-    assert outcome["decay_ratio"] > 1.5
-    assert all(c["pass"] for c in outcome["checks"]), outcome
-
-
-def test_gate3_evaluate_fails_decay():
-    daily, bench = _fake_daily(strat_mu=0.0001)
-    cagr = float((daily["equity"].iloc[-1] / daily["equity"].iloc[0]) ** (244 / len(daily)) - 1)
-    outcome = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench, cagr, is_cagr_value=0.60)
+    outcome = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench,
+                          cagr=_cagr_of(daily), sharpe=1.2, floor=_floor(0.05, 0.20))
     checks = {c["name"]: c["pass"] for c in outcome["checks"]}
-    assert checks["decay_ratio_min"] is False
+    assert all(checks.values()), outcome["checks"]
+    ref = outcome["reference"]
+    assert ref["regime"] == "上涨·低波动"
+    assert ref["floor_basis"] == "same_regime"
+    assert ref["cagr_floor"] == 0.05 and ref["sharpe_floor"] == 0.2
+
+
+def test_gate3_evaluate_fails_below_cagr_floor():
+    daily, bench = _fake_daily(strat_mu=0.0001)
+    outcome = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench,
+                          cagr=_cagr_of(daily), sharpe=1.2, floor=_floor(0.60, 0.20))
+    checks = {c["name"]: c["pass"] for c in outcome["checks"]}
+    assert checks["cagr_floor"] is False
+    assert checks["sharpe_floor"] is True
+
+
+def test_gate3_evaluate_fails_below_sharpe_floor():
+    daily, bench = _fake_daily()
+    outcome = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench,
+                          cagr=_cagr_of(daily), sharpe=0.05, floor=_floor(0.05, 0.50))
+    checks = {c["name"]: c["pass"] for c in outcome["checks"]}
+    assert checks["sharpe_floor"] is False
+    assert checks["cagr_floor"] is True
+
+
+def test_gate3_evaluate_fails_when_far_behind_benchmark():
+    daily, bench = _fake_daily(strat_mu=0.0002, bench_mu=0.0030)
+    outcome = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench,
+                          cagr=_cagr_of(daily), sharpe=1.2, floor=_floor(-0.50, -1.0))
+    checks = {c["name"]: c["pass"] for c in outcome["checks"]}
+    assert checks["excess_cagr_min"] is False, "兜底：相对同池等权落后超过 5pp 必须否决"
+    assert outcome["excess_cagr"] < -0.05
+
+
+def test_gate3_reference_block_has_market_context():
+    daily, bench = _fake_daily()
+    ref = gh.evaluate(daily.set_index(pd.to_datetime(daily["date"])), bench,
+                      cagr=_cagr_of(daily), sharpe=1.2, floor=_floor(0.05, 0.20))["reference"]
+    for key in ("bench_cagr", "bench_vol", "bench_max_drawdown", "beta", "corr",
+                "monthly_win_rate", "regime", "excess_t", "cagr_floor", "sharpe_floor",
+                "floor_basis", "windows_same_regime"):
+        assert key in ref, key
+
+
+def test_gate3_regime_reference_builds_floor_from_same_regime():
+    """样本内滚动窗口要能按行情分组，且底线落在分布之内（不高于最好、不低于最差）。"""
+    daily, bench = _fake_daily(n=1200, strat_mu=0.0010, bench_mu=0.0008)
+    daily = daily.set_index(pd.to_datetime(daily["date"]))
+    ref = gh.regime_reference(daily, bench, window_days=250)
+    assert ref["windows_total"] > 10, ref["windows_total"]
+    labels = {row["label"] for row in ref["rows"]}
+    assert all(label.count("·") == 1 for label in labels), labels
+    label = ref["rows"][0]["label"]
+    floor = gh.regime_floor(ref, label)
+    assert floor["basis"] in {"same_regime", "all_windows"}
+    assert floor["cagr_worst"] <= floor["cagr_floor"] <= floor["cagr_best"]
+    assert floor["sharpe_floor"] <= floor["sharpe_median"]
+    assert floor["n_used"] >= 1
+    assert set(floor) >= {"regime", "cagr_floor", "sharpe_floor", "windows_same_regime"}
 
 
 def test_gate3_marker_blocks_second_run():
