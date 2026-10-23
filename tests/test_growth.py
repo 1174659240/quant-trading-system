@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from contextlib import contextmanager
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -331,7 +332,8 @@ def test_eligible_mask_excludes_negative_and_pre_ipo() -> None:
 def test_growth_score_renormalizes_missing_block() -> None:
     with tmpdir("growth-score") as root:
         factors = _factors(root, blank_rd=True)
-        score = G.growth_score(factors.panel, factors=factors, min_names=2)
+        with _offline_caps(factors):
+            score = G.growth_score(factors.panel, factors=factors, min_names=2)
         day = pd.Timestamp("2019-03-01")
         row = score.loc[day]
         assert row.notna().any(), "研发块全空时应按剩余块归一，而不是整天为空"
@@ -347,10 +349,29 @@ def test_rank_only_inside_eligible_set() -> None:
     assert ranked["C"].isna().all(), "不合格的标的不能参与排名"
 
 
+
+@contextmanager
+def _offline_caps(factors):
+    """合成总市值，替掉真实股本表（ref/shares.csv）。
+
+    a3_small 走 style.mcap_panel -> refdata.load_shares，那是数据湖里的文件；
+    离线自测（CI）没有数据湖，所以这两项只验证形状与块归一，不验证真实市值。
+    """
+    import quant.factors.style as style
+
+    caps = pd.DataFrame(1e9, index=factors.panel.dates, columns=factors.panel.symbols)
+    original = style.mcap_panel
+    style.mcap_panel = lambda *_args, **_kwargs: caps
+    try:
+        yield
+    finally:
+        style.mcap_panel = original
+
 def test_growth_factors_returns_thirteen_plus_diagnostics() -> None:
     with tmpdir("growth-all") as root:
         factors = _factors(root)
-        frames = factors.all_factors()
+        with _offline_caps(factors):
+            frames = factors.all_factors()
         core = [name for name in frames if not name.startswith("diag_")]
         assert len(core) == 13
         assert set(core) == set(sum(G.BLOCKS.values(), ()))
