@@ -45,6 +45,5 @@ $py -u scripts/growth_turnover.py --report       # 换手专项
 
 归档第一次提交时工作区在 Windows 上，文本文件是 CRLF；Git 按 .gitattributes 入库时归一化成 LF，
 于是同一份文件在 Linux（CI）和 Windows（本机）算出的 sha256 不同。本次把归档内 27 个文本文件统一成 LF，
-**除行尾外内容没有任何变化**，manifest.csv 的 ytes 与 sha256 已按归一化后的字节重算。
-此后 
-esults/releases/** 在 .gitattributes 里标为 -text，任何平台检出都是同一份字节。
+**除行尾外内容没有任何变化**，manifest.csv 的 `bytes` 与 sha256 已按归一化后的字节重算。
+此后 results/releases/** 在 .gitattributes 里标为 -text，任何平台检出都是同一份字节。

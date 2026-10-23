@@ -169,6 +169,34 @@ def check_ignore(fail: list[str]) -> None:
             fail.append(f"忽略规则异常（{verb}）：{probe}")
 
 
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+TEXT_SUFFIXES = {".md", ".py", ".json", ".toml", ".yml", ".yaml", ".csv", ".txt"}
+
+
+def check_text_hygiene(fail: list[str]) -> int:
+    """文本里不该出现的控制字符与制表符。
+
+    起因：写文档时把 Markdown 反引号代码段交给 PowerShell 双引号字符串，
+    ` 
+ ` 变成回车、` 	 ` 变成制表符，文本被静默破坏且看不出来。
+    """
+    scanned = 0
+    for rel in tracked_files():
+        path = ROOT / rel
+        if path.suffix.lower() not in TEXT_SUFFIXES or not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        scanned += 1
+        hit = CONTROL_CHARS.search(text)
+        if hit:
+            line = text[: hit.start()].count("\n") + 1
+            fail.append(f"文本含控制字符：{rel}:{line}（U+{ord(hit.group()):04X}）")
+        if path.suffix.lower() == ".md" and "\t" in text:
+            line = text[: text.index("\t")].count("\n") + 1
+            fail.append(f"Markdown 含制表符：{rel}:{line}（多半是反引号被 shell 吃掉了）")
+    return scanned
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="仓库纪律自检")
     ap.add_argument("--quiet", action="store_true", help="只打印失败项")
@@ -184,6 +212,7 @@ def main() -> int:
     release_files = check_releases(fail)
     strategies = check_registry(fail)
     check_ignore(fail)
+    check_text_hygiene(fail)
 
     if not args.quiet:
         print(f"跟踪文件 {len(files)} 个；冻结证据 {release_files} 个文件已校验；策略 {strategies} 条")
