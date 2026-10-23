@@ -22,7 +22,15 @@ jobs:
         with:
           python-version: "3.12"
       - name: 体积 / 数据文件 / 凭据 / 冻结证据 / 台账
-        run: python scripts/repo_guard.py
+        shell: bash
+        run: |
+          out=$(python scripts/repo_guard.py 2>&1) && { echo "$out"; exit 0; }
+          code=$?
+          echo "$out"
+          printf '%s\n' "$out" | grep -E '\[失败\]|✗|ERROR|Traceback' | tail -8 | while IFS= read -r l; do
+            echo "::error::$l"
+          done
+          exit $code
 
   tests:
     name: 离线测试 py${{ matrix.python }}
@@ -42,12 +50,21 @@ jobs:
         shell: bash
         run: |
           python tests/run_all.py --list | awk -F'\t' '$2=="offline"{print $1}' > suites.txt
-          echo "本次运行：" $(tr '\n' ' ' < suites.txt)
+          echo "本次运行：$(tr '\n' ' ' < suites.txt)"
           status=0
           while read -r suite; do
             echo "::group::$suite"
-            python tests/run_all.py --suite "$suite" || status=1
+            if out=$(python tests/run_all.py --suite "$suite" 2>&1); then
+              printf '%s\n' "$out" | tail -2
+            else
+              status=1
+              printf '%s\n' "$out"
+              echo "::error::套件 $suite 失败"
+              printf '%s\n' "$out" | grep -E 'FAIL|AssertionError|Error|Traceback|✗' | tail -6 | while IFS= read -r l; do
+                echo "::error::[$suite] $l"
+              done
+            fi
             echo "::endgroup::"
           done < suites.txt
-          echo "需要数据湖而跳过：" $(python tests/run_all.py --list | awk -F'\t' '$2=="lake"{print $1}' | tr '\n' ' ')
+          echo "需要数据湖而跳过：$(python tests/run_all.py --list | awk -F'\t' '$2=="lake"{print $1}' | tr '\n' ' ')"
           exit $status

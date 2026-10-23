@@ -1,4 +1,4 @@
-# 统一行尾：仓库内存 LF，Windows 检出也不转换钩子与脚本
+﻿# 统一行尾：仓库内存 LF，Windows 检出也不转换钩子与脚本
 * text=auto
 *.py text eol=lf
 *.sh text eol=lf
@@ -6,3 +6,5 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.md text eol=lf
+# 冻结归档是「证据」，必须逐字节可校验，禁止任何行尾转换
+results/releases/** -text

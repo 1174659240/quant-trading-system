@@ -40,3 +40,11 @@ $py -u scripts/growth_turnover.py --report       # 换手专项
 
 1. **不得用这份归档里的任何数字回头调参**。样本外已被看过，任何基于它的修改都会让结论失效。
 2. **下一次真检验只能向前**：用 2026-10 之后的新数据（`scripts/growth_paper.py --mode live` 逐日纸面跟踪，或小资金实盘），并在开跑前重新登记阈值。
+
+## 行尾归一化（2026-10-22）
+
+归档第一次提交时工作区在 Windows 上，文本文件是 CRLF；Git 按 .gitattributes 入库时归一化成 LF，
+于是同一份文件在 Linux（CI）和 Windows（本机）算出的 sha256 不同。本次把归档内 27 个文本文件统一成 LF，
+**除行尾外内容没有任何变化**，manifest.csv 的 ytes 与 sha256 已按归一化后的字节重算。
+此后 
+esults/releases/** 在 .gitattributes 里标为 -text，任何平台检出都是同一份字节。
